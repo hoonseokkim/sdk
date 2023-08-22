@@ -1,3 +1,4 @@
+#if defined(OS_WINDOWS)
 #include "port/async-pipe.h"
 #include <assert.h>
 #include <Windows.h>
@@ -106,7 +107,7 @@ int async_pipe_close(async_pipe_t pipe)
 
 	// free
 	GlobalFree(o);
-	return err;
+	return -err;
 }
 
 static VOID WINAPI winpipe_onwrite(DWORD code, DWORD bytes, LPOVERLAPPED lpOverlapped)
@@ -152,3 +153,5 @@ int async_pipe_read(async_pipe_t pipe, void* msg, int len, async_pipe_onread cal
 	}
 	return 0;
 }
+
+#endif

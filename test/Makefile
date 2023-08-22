@@ -26,7 +26,10 @@ _SOURCE_FILES += $(ROOT)/source/port/aio-socket-iocp.c
 _SOURCE_FILES += $(ROOT)/source/port/aio-socket-epoll.c
 _SOURCE_FILES += $(ROOT)/source/port/aio-socket-kqueue.c
 _SOURCE_FILES += $(ROOT)/source/port/serial-port-win32.c
+_SOURCE_FILES += $(ROOT)/source/port/file-watcher-win32.c
 _SOURCE_FILES += $(ROOT)/source/port/win32-async-pipe.c
+_SOURCE_FILES += $(ROOT)/source/port/win32-minidump.c
+_SOURCE_FILES += $(ROOT)/source/port/win32-backtrace.c
 _SOURCE_FILES += $(ROOT)/source/port/sysvolume.cpp
 _SOURCE_FILES += $(ROOT)/source/string/snprintf.c
 _SOURCE_FILES += $(ROOT)/source/string/strndup.c
@@ -47,7 +50,7 @@ else
 LIBPATHS +=
 endif
 
-LIBS = rt pthread dl aio
+LIBS = rt pthread dl aio #ssl crypto
 
 STATIC_LIBS = $(ROOT)/libhttp/$(BUILD).$(PLATFORM)/libhttp.a
 

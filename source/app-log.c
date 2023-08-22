@@ -14,10 +14,26 @@
 #endif
 #endif
 
+#if defined(OS_WINDOWS)
+#define THREAD_LOCAL static __declspec(thread)
+#elif defined(__GNUC__) || defined(__clang__)
+#define THREAD_LOCAL static __thread
+#else
+#define THREAD_LOCAL 
+#endif
+
+#if !defined(OS_ANDROID) && (defined(OS_LINUX) || defined(OS_WINDOWS) || defined(OS_MAC))
+#define N_LOG_BUFFER 1024 * 8  // TLS/SDP
+#else
+#define N_LOG_BUFFER 1024 * 2
+#endif
+
 //static const char s_month[][4] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 //static const char* s_level_tag[] = { "EMERG", "ALERT", "CRIT", "ERROR", "WARNING", "NOTICE", "INFO", "DEBUG" };
 static const char* s_level_tag[] = { "X", "A", "C", "E", "W", "N", "I", "D" };
-static const char* s_level_color[] = { "\033[0;35m", "\033[0;34m", "\033[0;33m", "\033[0;31m", "\033[0;31m", "\033[0;37m", "\033[0;32m", "\033[0m" };
+static const char* s_level_color_default[] = { "\033[0m", "\033[0;35m", "\033[0;34m", "\033[0;33m", "\033[0;31m", "\033[0;33m", "\033[0;37m", "\033[0;32m", "\033[0m", };
+static const char* s_level_color_none[] = { "", "", "", "", "", "", "", "", "", };
+static const char** s_level_color = s_level_color_none;
 
 #define LOG_LEVEL(level) ((LOG_EMERG <= level && level <= LOG_DEBUG) ? level : LOG_DEBUG)
 
@@ -36,13 +52,13 @@ static int app_log_time(char timestr[], unsigned int bytes)
 #if defined(OS_WINDOWS)
 	SYSTEMTIME t;
 	GetLocalTime(&t);
-	return snprintf(timestr, bytes, "%02hu:%02hu:%02hu.%03hu|", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
+	return snprintf(timestr, bytes, "%04hu-%02hu-%02huT%02hu:%02hu:%02hu.%03hu|", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
 #else
 	struct tm t;
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	localtime_r(&tv.tv_sec, &t);
-	return snprintf(timestr, bytes, "%02d:%02d:%02d.%03d|", (int)t.tm_hour, (int)t.tm_min, (int)t.tm_sec, (int)(tv.tv_usec / 1000) % 1000);
+	return snprintf(timestr, bytes, "%04d-%02d-%02dT%02d:%02d:%02d.%03d|", (int)t.tm_year + 1900, (int)t.tm_mon+1, (int)t.tm_mday, (int)t.tm_hour, (int)t.tm_min, (int)t.tm_sec, (int)(tv.tv_usec / 1000) % 1000);
 #endif
 	//return snprintf(timestr, sizeof(timestr), "%s-%02d %02d:%02d:%02d.%03d|", /*t.year+1900,*/ s_month[t.month % 12], t.day, t.hour, t.minute, t.second, t.millisecond);
 }
@@ -51,7 +67,7 @@ static void app_log_syslog(int level, const char* format, va_list args)
 {
 #if defined(OS_WINDOWS)
 	int n = 0;
-	char log[1024 * 4];
+	THREAD_LOCAL char log[N_LOG_BUFFER];
 #if defined(_DEBUG) || defined(DEBUG)
 	n += app_log_time(log + n, sizeof(log) - n - 1);
 #endif
@@ -72,12 +88,10 @@ static void app_log_print(int level, const char* format, va_list args)
 {
 	int n;
 	char timestr[65];
-	char log[1024 * 4];
+	THREAD_LOCAL char log[N_LOG_BUFFER];
 	app_log_time(timestr, sizeof(timestr));
-	n = snprintf(log, sizeof(log) - 1, "%s%s%s|", s_level_color[LOG_LEVEL(level)], timestr, s_level_tag[LOG_LEVEL(level)]);
-	n += vsnprintf(log + n, sizeof(log) - n - 1, format, args);
-	n += snprintf(log + n, sizeof(log) - n - 1, "\033[0m");
-	printf("%.*s", n, log);
+	n = vsnprintf(log, sizeof(log) - 1, format, args);
+	printf("%s%s%s|%.*s%s", s_level_color[LOG_LEVEL(level) + 1], timestr, s_level_tag[LOG_LEVEL(level)], n, log, s_level_color[0]);
 }
 
 static int s_syslog_level = LOG_INFO;
@@ -100,4 +114,9 @@ void app_log(int level, const char* format, ...)
 		app_log_syslog(level, format, args);
 		va_end(args);
 	}
+}
+
+void app_log_setcolor(int enable)
+{
+	s_level_color = enable ? s_level_color_default : s_level_color_none;
 }

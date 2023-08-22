@@ -28,12 +28,21 @@
 #endif
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 #include <errno.h>
 
 #if defined(OS_WINDOWS)
-int ip_route_get(const char* destination, char ip[64])
+static inline int socket_addr_mask_compare(uint8_t prefix, const struct sockaddr* addr1, const struct sockaddr* addr2)
+{
+	struct sockaddr_storage ss[2];
+	return 0 == socket_addr_netmask(&ss[0], prefix, addr1) 
+		&& 0 == socket_addr_netmask(&ss[1], prefix, addr2) 
+		&& 0 == socket_addr_compare((const struct sockaddr*)&ss[0], (const struct sockaddr*)&ss[1]);
+}
+
+int ip_route_get(const char* destination, char ip[65])
 {
 	int r;
 	DWORD index;
@@ -73,18 +82,22 @@ int ip_route_get(const char* destination, char ip[64])
 			//if (IF_TYPE_ETHERNET_CSMACD != pAdapter->IfType && IF_TYPE_IEEE80211 != pAdapter->IfType && IF_TYPE_SOFTWARE_LOOPBACK != pAdapter->IfType)
 			//	continue;
 
-			for (addr = pAdapter->FirstUnicastAddress; 0 == ip[0] && addr; addr = addr->Next)
+			// todo: iter check netmask
+			for (addr = pAdapter->FirstUnicastAddress; /*0 == ip[0] &&*/ addr; addr = addr->Next)
 			{
 				if (addr->Address.lpSockaddr->sa_family != ai->ai_family)
 					continue;
 
-				if (AF_INET == addr->Address.lpSockaddr->sa_family)
-				{
-					inet_ntop(AF_INET, &((struct sockaddr_in*)addr->Address.lpSockaddr)->sin_addr, ip, 40);
-				}
-				else if (AF_INET6 == addr->Address.lpSockaddr->sa_family)
-				{
-					inet_ntop(AF_INET6, &((struct sockaddr_in6*)addr->Address.lpSockaddr)->sin6_addr, ip, 64);
+				if (0 == ip[0] || (addr->OnLinkPrefixLength > 0 && socket_addr_mask_compare(addr->OnLinkPrefixLength, ai->ai_addr, addr->Address.lpSockaddr))) {
+
+					if (AF_INET == addr->Address.lpSockaddr->sa_family)
+					{
+						inet_ntop(AF_INET, &((struct sockaddr_in*)addr->Address.lpSockaddr)->sin_addr, ip, 40);
+					}
+					else if (AF_INET6 == addr->Address.lpSockaddr->sa_family)
+					{
+						inet_ntop(AF_INET6, &((struct sockaddr_in6*)addr->Address.lpSockaddr)->sin6_addr, ip, 64);
+					}
 				}
 			}
 		}
@@ -96,7 +109,7 @@ int ip_route_get(const char* destination, char ip[64])
 }
 #else
 
-int ip_route_get(const char* destination, char ip[40])
+int ip_route_get(const char* destination, char ip[65])
 {
     int r;
     u_short port;
@@ -109,10 +122,11 @@ int ip_route_get(const char* destination, char ip[40])
         return r;
     
     r = router_gateway((struct sockaddr*)&dst, &gateway);
-    if(0 == r)
+    if(0 == r) {
         r = socket_addr_to((struct sockaddr*)&gateway, socket_addr_len((struct sockaddr*)&gateway), ip, &port);
-    else
+	} else {
         r = ip_local(ip);
+	}
 	return r;
 }
 #endif
@@ -162,7 +176,7 @@ int ip_local(char ip[65])
 	struct ifaddrs *ifaddr, *ifa;
 
 	if(0 != getifaddrs(&ifaddr))
-		return errno;
+		return -errno;
 
 	for(ifa = ifaddr; ifa; ifa = ifa->ifa_next)
 	{

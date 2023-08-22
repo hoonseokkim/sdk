@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <limits.h>
 #include <errno.h>
+#include <sys/statvfs.h>
 #endif
 
 #include <stdio.h>
@@ -27,8 +28,8 @@ static inline int path_testfile(const char* filename)
 #if defined(OS_WINDOWS)
 	// we must use GetFileAttributes() instead of the ANSI C functions because
 	// it can cope with network (UNC) paths unlike them
-	size_t ret = GetFileAttributesA(filename);
-	return ((ret != (size_t)-1) && !(ret & FILE_ATTRIBUTE_DIRECTORY)) ? 1 : 0;
+    DWORD ret = GetFileAttributesA(filename);
+	return ((ret != INVALID_FILE_ATTRIBUTES) && !(ret & FILE_ATTRIBUTE_DIRECTORY)) ? 1 : 0;
 #else
 	struct stat info;
 	return (stat(filename, &info)==0 && (info.st_mode&S_IFREG)) ? 1 : 0;
@@ -40,8 +41,8 @@ static inline int path_testfile(const char* filename)
 static inline int path_testdir(const char* path)
 {
 #if defined(OS_WINDOWS)
-	size_t ret = GetFileAttributesA(path);
-	return ((ret != (size_t)-1) && (ret & FILE_ATTRIBUTE_DIRECTORY)) ? 1 : 0;
+	DWORD ret = GetFileAttributesA(path);
+	return ((ret != INVALID_FILE_ATTRIBUTES) && (ret & FILE_ATTRIBUTE_DIRECTORY)) ? 1 : 0;
 #else
 	struct stat info;
 	return (stat(path, &info)==0 && (info.st_mode&S_IFDIR)) ? 1 : 0;
@@ -54,7 +55,7 @@ static inline int path_makedir(const char* path)
 {
 #if defined(OS_WINDOWS)
 	BOOL r = CreateDirectoryA(path, NULL);
-	return TRUE==r ? 0 : (int)GetLastError();
+	return r ? 0 : (int)GetLastError();
 #else
 	int r = mkdir(path, 0777);
 	return 0 == r ? 0 : errno;
@@ -67,10 +68,10 @@ static inline int path_rmdir(const char* path)
 {
 #if defined(OS_WINDOWS)
 	BOOL r = RemoveDirectoryA(path);
-	return TRUE==r?0:(int)GetLastError();
+	return r ? 0 : (int)GetLastError();
 #else
 	int r = rmdir(path);
-	return 0 == r? 0 : errno;
+	return 0 == r ? 0 : errno;
 #endif
 }
 
@@ -80,7 +81,7 @@ static inline int path_getcwd(char* path, unsigned int bytes)
 {
 #if defined(OS_WINDOWS)
 	DWORD r = GetCurrentDirectoryA(bytes, path);
-	return 0==r ? GetLastError() : 0;
+	return r > 0 ? 0 : (int)GetLastError();
 #else
 	char* p = getcwd(path, bytes);
 	return p ? 0 : errno;
@@ -93,10 +94,10 @@ static inline int path_chcwd(const char* path)
 {
 #if defined(OS_WINDOWS)
 	BOOL r = SetCurrentDirectoryA(path);
-	return TRUE==r ? 0 : (int)GetLastError();
+	return r ? 0 : (int)GetLastError();
 #else
 	int r = chdir(path);
-	return 0 == r? 0 : errno;
+	return 0 == r ? 0 : errno;
 #endif
 }
 
@@ -106,7 +107,7 @@ static inline int path_realpath(const char* path, char resolved_path[PATH_MAX])
 {
 #if defined(OS_WINDOWS)
 	DWORD r = GetFullPathNameA(path, PATH_MAX, resolved_path, NULL);
-	return 0==r ? 0 : (int)GetLastError();
+	return r > 0 ? 0 : (int)GetLastError();
 #else
 	char* p = realpath(path, resolved_path);
 	return p ? 0 : errno;
@@ -126,7 +127,7 @@ static inline int path_dirname(const char* fullname)
 	const char* p = path_basename(fullname);
 	if(p == fullname)
 		return 0; // don't valid path name
-	return p - 1 - fullname; // skip /
+	return (int)(p - 1 - fullname); // skip /
 }
 
 /// path_concat("a/./b/../c.txt", "e:\dir\") => e:\dir\a\c.txt
@@ -152,10 +153,10 @@ static inline int path_rmfile(const char* file)
 {
 #if defined(OS_WINDOWS)
 	BOOL r = DeleteFileA(file);
-	return TRUE==r ? 0 : (int)GetLastError();
+	return r ? 0 : (int)GetLastError();
 #else
 	int r = remove(file);
-	return 0 == r? 0 : errno;
+	return 0 == r ? 0 : errno;
 #endif
 }
 
@@ -165,7 +166,7 @@ static inline int path_rename(const char* oldpath, const char* newpath)
 {
 #if defined(OS_WINDOWS)
 	BOOL r = MoveFileA(oldpath, newpath);
-	return TRUE==r?0:(int)GetLastError();
+	return r ? 0:(int)GetLastError();
 #else
 	int r = rename(oldpath, newpath);
 	return 0 == r? 0 : errno;
@@ -189,6 +190,23 @@ static inline int64_t path_filesize(const char* filename)
 #endif
 }
 
+/// @param[in] path must be a exist dir
+/// return disk free space size
+static inline int64_t path_space(const char* path)
+{
+#if defined(OS_WINDOWS)
+    ULARGE_INTEGER free;
+    if (0 != GetDiskFreeSpaceExA(path, &free, NULL, NULL))
+        return (int64_t)free.QuadPart;
+    return -1;
+#else
+    struct statvfs st;
+    if (0 == statvfs(path, &st))
+        return ((int64_t)st.f_bavail) * st.f_bsize;
+    return -1;
+#endif
+}
+
 static inline int path_isabsolute(const char* path, size_t n)
 {
     size_t off;
@@ -200,12 +218,12 @@ static inline int path_isabsolute(const char* path, size_t n)
 
 #if defined(OS_WINDOWS)
     // 1. \ (relative to current working directory root)
-    // 2. [driver_letter]:\ 
-    // 3. \\[server]\]sharename]\ 
-    // 4. \\?\[driver_spec]:\ 
-    // 5. \\?\[server]\[sharename]\ 
-    // 6. \\?\UNC\[server]\[sharename]\ 
-    // 7. \\.\[physical_device]\  e.g. \\.\COM1\ 
+    // 2. [driver_letter]:\ -
+    // 3. \\[server]\]sharename]\ -
+    // 4. \\?\[driver_spec]:\ -
+    // 5. \\?\[server]\[sharename]\ -
+    // 6. \\?\UNC\[server]\[sharename]\ -
+    // 7. \\.\[physical_device]\  e.g. \\.\COM1\ -
 
     if (n > 3)
     {

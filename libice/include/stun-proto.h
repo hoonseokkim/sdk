@@ -31,6 +31,20 @@
 #define STUN_RETRANSMISSION_INTERVAL_MIN	100 //ms
 #define STUN_RETRANSMISSION_INTERVAL_MAX	1500 //31500 // ms
 
+
+/*
+ 0               1
+ 2  3  4 5 6 7 8 9 0 1 2 3 4 5
++--+--+-+-+-+-+-+-+-+-+-+-+-+-+
+|M |M |M|M|M|C|M|M|M|C|M|M|M|M|
+|11|10|9|8|7|1|6|5|4|0|3|2|1|0|
++--+--+-+-+-+-+-+-+-+-+-+-+-+-+
+*/
+#define STUN_MESSAGE_TYPE(mclass, method)	((((mclass) & 02) << 7) | (((mclass) & 01) << 4) | (((method) & 0xF80) << 2) | (((method) & 0x0070) << 1) | ((method) & 0x000F))
+#define STUN_MESSAGE_CLASS(type)			((((type) >> 7) & 0x02) | (((type) >> 4) & 0x01))
+#define STUN_MESSAGE_METHOD(type)			((((type) >> 2) & 0x0F80) | (((type) >> 1) & 0x0070) | ((type) & 0x000F))
+
+
 // rfc5389 6. STUN Message Structure(p10)
 #define STUN_METHOD_CLASS_REQUEST           0x00 //0x0000 //0b00
 #define STUN_METHOD_CLASS_INDICATION        0x01 //0x0010 //0b01
@@ -101,6 +115,18 @@ enum
 {
     STUN_CREDENTIAL_SHORT_TERM          = 1,
     STUN_CREDENTIAL_LONG_TERM,
+};
+
+enum
+{
+    // https://datatracker.ietf.org/doc/html/rfc5389#section-15.3
+    STUN_LIMIT_USERNAME_MAX     = 513,
+
+    // https://datatracker.ietf.org/doc/html/rfc5245#section-15.4
+    STUN_LIMIT_ICEUFRAG_MAX     = 256, // 256 + ':' + 256 = 513
+    STUN_LIMIT_ICEUFRAG_MIN     = 4,
+    STUN_LIMIT_ICEPASSWORD_MAX  = 256,
+    STUN_LIMIT_ICEPASSWORD_MIN  = 22,
 };
 
 #endif /* _stun_proto_h_ */

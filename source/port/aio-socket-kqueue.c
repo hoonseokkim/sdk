@@ -1,4 +1,6 @@
+#if defined(OS_MAC)
 #include "aio-socket.h"
+#include "sys/atomic.h"
 #include <sys/types.h>
 #include <sys/event.h>
 #include <sys/time.h>
@@ -119,27 +121,27 @@ struct kqueue_context
 
 #define KQueueRead(ctx, callback)   do {\
     ctx->read = callback;   \
-    OSAtomicIncrement32(&ctx->ref);        \
+    atomic_increment32(&ctx->ref);        \
     EV_SET(&ctx->ev[0], ctx->socket[0], EVFILT_READ, EV_ADD|EV_ONESHOT, 0, 0, ctx);    \
     if(-1 != kevent(s_kqueue, &ctx->ev[0], 1, NULL, 0, NULL))   \
         return 0;   \
     ctx->ev[0].filter = 0; \
-    OSAtomicDecrement32(&ctx->ref);    \
+    atomic_decrement32(&ctx->ref);    \
 } while(0)
 
 #define KQueueWrite(ctx, callback)  do {\
     ctx->write = callback;         \
-    OSAtomicIncrement32(&ctx->ref);        \
+    atomic_increment32(&ctx->ref);        \
     EV_SET(&ctx->ev[1], ctx->socket[1], EVFILT_WRITE, EV_ADD|EV_ONESHOT, 0, 0, ctx);   \
     if(-1 != kevent(s_kqueue, &ctx->ev[1], 1, NULL, 0, NULL))   \
         return 0;   \
     ctx->ev[1].filter = 0;  \
-    OSAtomicDecrement32(&ctx->ref);    \
+    atomic_decrement32(&ctx->ref);    \
 } while(0)
 
 static int aio_socket_release(struct kqueue_context* ctx)
 {
-    if( 0 == OSAtomicDecrement32(&ctx->ref) )
+    if( 0 == atomic_decrement32(&ctx->ref) )
     {
         //EV_SET(&ctx->ev[0], ctx->socket, 0, EV_DELETE, 0, 0, ctx);
         //EV_SET(&ctx->ev[1], ctx->socket, 0, EV_DELETE, 0, 0, ctx);
@@ -826,3 +828,5 @@ int aio_socket_sendto_v(aio_socket_t socket, const struct sockaddr *addr, sockle
 
     return 0 == r ? 0 : errno;
 }
+
+#endif

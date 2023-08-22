@@ -25,6 +25,10 @@ typedef WSABUF	socket_bufvec_t;
 #define SHUT_WR SD_SEND
 #define SHUT_RDWR SD_BOTH
 
+#ifndef ETIMEDOUT
+	#define ETIMEDOUT 138
+#endif
+
 // IPv6 MTU
 #ifndef IPV6_MTU_DISCOVER
 	#define IPV6_MTU_DISCOVER	71
@@ -67,6 +71,7 @@ typedef struct iovec socket_bufvec_t;
 #endif
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #ifndef IN
@@ -186,6 +191,10 @@ static inline int socket_getpeername(IN socket_t sock, OUT char ip[SOCKET_ADDRLE
 static inline int socket_isip(IN const char* ip); // socket_isip("192.168.1.2") -> 1, socket_isip("www.google.com") -> 0
 static inline int socket_ipv4(IN const char* ipv4_or_dns, OUT char ip[SOCKET_ADDRLEN]);
 static inline int socket_ipv6(IN const char* ipv6_or_dns, OUT char ip[SOCKET_ADDRLEN]);
+// ipv4/ipv6 netmask
+static inline int socket_ipv4_netmask(IN uint8_t prefix, OUT struct in_addr* addr);
+static inline int socket_ipv6_netmask(IN uint8_t prefix, OUT struct in6_addr* addr);
+static inline int socket_addr_netmask(OUT struct sockaddr_storage* mask, IN uint8_t prefix, IN const struct sockaddr* addr);
 
 static inline int socket_addr_from_ipv4(OUT struct sockaddr_in* addr4, IN const char* ip_or_dns, IN u_short port);
 static inline int socket_addr_from_ipv6(OUT struct sockaddr_in6* addr6, IN const char* ip_or_dns, IN u_short port);
@@ -193,6 +202,7 @@ static inline int socket_addr_from(OUT struct sockaddr_storage* ss, OUT socklen_
 static inline int socket_addr_to(IN const struct sockaddr* sa, IN socklen_t salen, OUT char ip[SOCKET_ADDRLEN], OUT u_short* port);
 static inline int socket_addr_name(IN const struct sockaddr* sa, IN socklen_t salen, OUT char* host, IN socklen_t hostlen);
 static inline int socket_addr_setport(IN struct sockaddr* sa, IN socklen_t salen, u_short port);
+static inline int socket_addr_is_local(IN const struct sockaddr* sa, IN socklen_t salen);
 static inline int socket_addr_is_multicast(IN const struct sockaddr* sa, IN socklen_t salen);
 static inline int socket_addr_compare(const struct sockaddr* first, const struct sockaddr* second); // 0-equal, other-don't equal
 static inline int socket_addr_len(const struct sockaddr* addr);
@@ -986,7 +996,8 @@ static inline int socket_getdomain(IN socket_t sock, OUT int* domain)
 	r = getsockopt(sock, SOL_SOCKET, SO_PROTOCOL_INFOW, (char*)&protocolInfo, &len);
 	if (0 == r)
 		*domain = protocolInfo.iAddressFamily;
-#elif defined(OS_LINUX) 
+#elif defined(OS_LINUX) && !defined(OS_WINDOWS_WSL)
+	// fixme: wsl errno 92
 	socklen_t len = sizeof(domain);
 	r = getsockopt(sock, SOL_SOCKET, SO_DOMAIN, (char*)domain, &len);
 #else
@@ -1156,6 +1167,7 @@ static inline int socket_addr_to(IN const struct sockaddr* sa, IN socklen_t sale
 		return -1; // unknown address family
 	}
 
+	(void)salen;
 	return 0;
 }
 
@@ -1179,6 +1191,7 @@ static inline int socket_addr_setport(IN struct sockaddr* sa, IN socklen_t salen
 		return -1;
 	}
 
+	(void)salen;
 	return 0;
 }
 
@@ -1187,10 +1200,47 @@ static inline int socket_addr_name(IN const struct sockaddr* sa, IN socklen_t sa
 	return getnameinfo(sa, salen, host, hostlen, NULL, 0, 0);
 }
 
+static inline int socket_addr_is_local(IN const struct sockaddr* sa, IN socklen_t salen)
+{
+	if (AF_INET == sa->sa_family)
+	{
+		// unspecified: 0.0.0.0
+		// loopback: 127.x.x.x
+		// link-local unicast: 169.254.x.x
+		const struct sockaddr_in* in = (const struct sockaddr_in*)sa;
+		assert(sizeof(struct sockaddr_in) == salen);
+		return 0 == in->sin_addr.s_addr || 127 == (htonl(in->sin_addr.s_addr) >> 24) || (0xA9FE == (htonl(in->sin_addr.s_addr) >> 16)) ? 1 : 0;
+	}
+	else if (AF_INET6 == sa->sa_family)
+	{		
+		// unspecified: ::
+		// loopback: ::1
+		// link-local unicast: 0xFE 0x80
+		// link-local multicast: 0xFF 0x01/0x02
+		static const unsigned char ipv6_unspecified[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }; // IN6ADDR_ANY_INIT
+		static const unsigned char ipv6_loopback[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+		const struct sockaddr_in6* in6 = (const struct sockaddr_in6*)sa;
+		assert(sizeof(struct sockaddr_in6) == salen);
+		return 0 == memcmp(ipv6_unspecified, in6->sin6_addr.s6_addr, sizeof(ipv6_unspecified)) // IN6_IS_ADDR_UNSPECIFIED
+			|| 0 == memcmp(ipv6_loopback, in6->sin6_addr.s6_addr, sizeof(ipv6_loopback)) // IN6_IS_ADDR_LOOPBACK
+			|| (in6->sin6_addr.s6_addr[0] == 0xfe && (in6->sin6_addr.s6_addr[1] & 0xc0) == 0x80) // IN6_IS_ADDR_LINKLOCAL
+			|| (in6->sin6_addr.s6_addr[0] == 0xff && ((in6->sin6_addr.s6_addr[1] & 0x0f) == 0x01 || (in6->sin6_addr.s6_addr[1] & 0x0f) == 0x02)) // IN6_IS_ADDR_MULTICAST
+			? 1 : 0;
+	}
+	else
+	{
+		assert(0);
+	}
+
+	(void)salen;
+	return 0;
+}
+
 static inline int socket_addr_is_multicast(IN const struct sockaddr* sa, IN socklen_t salen)
 {
 	if (AF_INET == sa->sa_family)
 	{
+		// IN_MULTICAST
 		// 224.x.x.x ~ 239.x.x.x
 		// b1110xxxx xxxxxxxx xxxxxxxx xxxxxxxx
 		const struct sockaddr_in* in = (const struct sockaddr_in*)sa;
@@ -1209,6 +1259,7 @@ static inline int socket_addr_is_multicast(IN const struct sockaddr* sa, IN sock
 		assert(0);
 	}
 
+	(void)salen;
 	return 0;
 }
 
@@ -1254,6 +1305,56 @@ static inline int socket_addr_len(const struct sockaddr* addr)
 	//case AF_NETLINK:return sizeof(struct sockaddr_nl);
 #endif
 	default: return 0;
+	}
+}
+
+static inline int socket_ipv4_netmask(IN uint8_t prefix, OUT struct in_addr* addr)
+{
+	addr->s_addr = (unsigned long)ntohl(0xFFFFFFFF << (32 - prefix));
+	return prefix > 32 ? -1 : 0;
+}
+
+static inline int socket_ipv6_netmask(IN uint8_t prefix, OUT struct in6_addr* addr)
+{
+	uint8_t i;
+	for (i = 0; i < 16; i++)
+	{
+		addr->s6_addr[0] = prefix >= 8 ? 0xFF : (0xFF << (8 - prefix));
+		prefix -= 8;
+	}
+	return prefix > 128 ? -1 : 0;
+}
+
+static inline int socket_addr_netmask(OUT struct sockaddr_storage* mask, IN uint8_t prefix, IN const struct sockaddr* addr)
+{
+	int r;
+	uint8_t i;
+	struct in_addr mask4;
+	struct in6_addr mask6;
+	struct sockaddr_in* ip4;
+	struct sockaddr_in6* ip6;
+
+	if (AF_INET == addr->sa_family)
+	{
+		r = socket_ipv4_netmask(prefix, &mask4);
+		ip4 = (struct sockaddr_in*)mask;
+		memcpy(ip4, addr, sizeof(struct sockaddr_in));
+		ip4->sin_addr.s_addr &= mask4.s_addr;
+		return r;
+	}
+	else if (AF_INET6 == addr->sa_family)
+	{
+		r = socket_ipv6_netmask(prefix, &mask6);
+		ip6 = (struct sockaddr_in6*)mask;
+		memcpy(ip6, addr, sizeof(struct sockaddr_in6));
+		for (i = 0; i < 16; i++)
+			ip6->sin6_addr.s6_addr[i] &= mask6.s6_addr[i];
+		return r;
+	}
+	else
+	{
+		assert(0);
+		return -1;
 	}
 }
 

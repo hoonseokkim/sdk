@@ -50,7 +50,6 @@ typedef struct
 #endif
 } process_create_param_t;
 
-
 //////////////////////////////////////////////////////////////////////////
 ///
 /// process
@@ -81,7 +80,7 @@ static inline int process_createve(const char* filename, process_create_param_t 
 	return 0;
 
 #else
-	int i;
+	int i, n;
 	pid_t r = fork();
 	if(r < 0)
 	{
@@ -94,7 +93,8 @@ static inline int process_createve(const char* filename, process_create_param_t 
 		// 0-2 stdin/stdout/stderr
 		if(1 != param->bInheritHandles)
 		{
-			for(i=3;i<getdtablesize();i++)
+            n = (int)sysconf(_SC_OPEN_MAX);
+			for (i = 3; i < n; i++)
 				close(i);
 		}
 
@@ -158,7 +158,7 @@ static inline pid_t process_self(void)
 static inline int process_selfname(char* name, size_t size)
 {
 #if defined(OS_WINDOWS)
-	if(0 == GetModuleFileNameA(NULL, name, size))
+	if(0 == GetModuleFileNameA(NULL, name, (DWORD)size))
 		return (int)GetLastError();
 	return 0;
 #else
@@ -178,7 +178,7 @@ static inline int process_name(pid_t pid, char* name, size_t size)
 	if(!h)
 		return (int)GetLastError();
 
-	r = GetModuleFileNameExA(h, NULL, name, size);
+	r = GetModuleFileNameExA(h, NULL, name, (DWORD)size);
 	CloseHandle(h);
 	return 0==r ? (int)GetLastError() : 0;
 #else

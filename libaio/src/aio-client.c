@@ -66,7 +66,7 @@ static void aio_client_release(aio_client_t* client);
 static void aio_client_ondestroy(void* param);
 static void aio_client_onrecv(void* param, int code, size_t bytes);
 static void aio_client_onsend(void* param, int code, size_t bytes);
-static void aio_client_onconn(void* param, int code, aio_socket_t socket);
+static void aio_client_onconn(void* param, int code, socket_t tcp, aio_socket_t socket);
 
 aio_client_t* aio_client_create(const char* host, int port, struct aio_client_handler_t* handler, void* param)
 {
@@ -152,6 +152,8 @@ int aio_client_recv(aio_client_t* client, void* data, size_t bytes)
 	else
 	{
 		r = aio_client_connect_internal(client);
+		if (0 != r)
+			client->data[RECV].state = RW_NONE; // clear recv state
 	}
 
 	spinlock_unlock(&client->locker);
@@ -186,6 +188,8 @@ int aio_client_recv_v(aio_client_t* client, socket_bufvec_t *vec, int n)
 	else
 	{
 		r = aio_client_connect_internal(client);
+		if (0 != r)
+			client->data[RECV].state = RW_NONE; // clear recv state
 	}
 
 	spinlock_unlock(&client->locker);
@@ -220,6 +224,8 @@ int aio_client_send(aio_client_t* client, const void* data, size_t bytes)
 	else
 	{
 		r = aio_client_connect_internal(client);
+		if (0 != r)
+			client->data[SEND].state = RW_NONE; // clear send state
 	}
 
 	spinlock_unlock(&client->locker);
@@ -254,6 +260,8 @@ int aio_client_send_v(aio_client_t* client, socket_bufvec_t *vec, int n)
 	else
 	{
 		r = aio_client_connect_internal(client);
+		if (0 != r)
+			client->data[SEND].state = RW_NONE; // clear send state
 	}
 
 	spinlock_unlock(&client->locker);
@@ -277,7 +285,7 @@ void aio_client_gettimeout(aio_client_t* client, int* conn, int* recv, int* send
 	if (send) *send = client->wtimeout;
 }
 
-static void aio_client_onconn(void* param, int code, aio_socket_t aio)
+static void aio_client_onconn(void* param, int code, socket_t tcp, aio_socket_t aio)
 {
 	int send = 0, recv = 0;
 	struct aio_client_t* client;

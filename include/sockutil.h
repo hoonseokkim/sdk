@@ -200,7 +200,7 @@ static inline socket_t socket_bind_addr(const struct sockaddr* addr, int socktyp
 	// Dual-Stack Socket option
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/bb513665(v=vs.85).aspx
 	// By default, an IPv6 socket created on Windows Vista and later only operates over the IPv6 protocol.
-	if (AF_INET6 == addr->sa_family && 0 != socket_setipv6only(s, dual ? 1 : 0))
+	if (AF_INET6 == addr->sa_family && 0 != socket_setipv6only(s, dual ? 0 : 1))
 	{
 		socket_close(s);
 		return socket_invalid;
@@ -513,7 +513,11 @@ static inline int socket_send_v_all_by_time(IN socket_t sock, IN socket_bufvec_t
 		if (n > 0)
 		{
 			count = r - count;
+#if defined(OS_WINDOWS)
+			vec[i].iov_len -= (ULONG)count;
+#else
 			vec[i].iov_len -= count;
+#endif
 			vec[i].iov_base = (char*)vec[i].iov_base + count;
 			vec += i;
 		}
@@ -576,6 +580,18 @@ static inline BOOL WINAPI wsarecvmsgcallback(PINIT_ONCE InitOnce, PVOID Paramete
 	(void)InitOnce, (void)Parameter2;
 	return TRUE;
 }
+
+//static inline BOOL WINAPI wsasendmsgcallback(PINIT_ONCE InitOnce, PVOID Parameter, PVOID* Parameter2)
+//{
+//	DWORD bytes;
+//	socket_t sock;
+//	GUID guid = WSAID_WSASENDMSG;
+//	sock = socket_tcp();
+//	WSAIoctl(sock, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(GUID), Parameter, sizeof(LPFN_WSASENDMSG), &bytes, NULL, NULL);
+//	socket_close(sock);
+//	(void)InitOnce, (void)Parameter2;
+//	return TRUE;
+//}
 #endif
 
 /// @param[out] local ip destination addr(local address) without port
@@ -588,11 +604,11 @@ static inline int socket_recvfrom_addr(IN socket_t sock, OUT socket_bufvec_t* ve
 	WSACMSGHDR* cmsg;
 	struct in_pktinfo* pktinfo;
 	struct in6_pktinfo* pktinfo6;
-	static INIT_ONCE wsarecvmsgonce;
-	static LPFN_WSARECVMSG WSARecvMsg;
 
 	DWORD bytes;
 	WSAMSG wsamsg;
+	static INIT_ONCE wsarecvmsgonce;
+	static LPFN_WSARECVMSG WSARecvMsg;
 	InitOnceExecuteOnce(&wsarecvmsgonce, wsarecvmsgcallback, &WSARecvMsg, NULL);
 	memset(control, 0, sizeof(control));
 	memset(&wsamsg, 0, sizeof(wsamsg));
@@ -693,6 +709,11 @@ static inline int socket_sendto_addr(IN socket_t sock, IN const socket_bufvec_t*
 
 	DWORD bytes;
 	WSAMSG wsamsg;
+	//static INIT_ONCE wsasendmsgonce;
+	//static LPFN_WSASENDMSG WSASendMsg;
+	//InitOnceExecuteOnce(&wsasendmsgonce, wsasendmsgcallback, &WSASendMsg, NULL);
+	memset(control, 0, sizeof(control));
+	memset(&wsamsg, 0, sizeof(wsamsg));
 	wsamsg.name = (LPSOCKADDR)peer;
 	wsamsg.namelen = peerlen;
 	wsamsg.lpBuffers = (LPWSABUF)vec;

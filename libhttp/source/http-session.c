@@ -327,12 +327,12 @@ static void http_session_onhttp(void* param, const void* data, int len)
 		return;
 	}
 
-	if (session->payload.len + (size_t)len > session->payload.cap)
+	if (session->payload.len + (size_t)len + 1 /*filling zero*/ > session->payload.cap)
 	{
 		if (session->payload.len + (size_t)len > session->payload.max)
 			return;
 
-		p = realloc(session->payload.ptr, session->payload.len + (size_t)len + HTTP_RECV_BUFFER);
+		p = realloc(session->payload.ptr, session->payload.len + (size_t)len + 1 + HTTP_RECV_BUFFER);
 		if (!p)
 			return;
 
@@ -342,9 +342,10 @@ static void http_session_onhttp(void* param, const void* data, int len)
 
 	memcpy(session->payload.ptr + session->payload.len, data, len);
 	session->payload.len += (size_t)len;
+	session->payload.ptr[session->payload.len] = 0; /*filling zero*/
 }
 
-int http_session_create(struct http_server_t *server, socket_t socket, const struct sockaddr* sa, socklen_t salen)
+struct http_session_t* http_session_create(struct http_server_t *server, socket_t socket, const struct sockaddr* sa, socklen_t salen)
 {
 	struct http_session_t *session;
 	struct aio_transport_handler_t handler;
@@ -354,7 +355,7 @@ int http_session_create(struct http_server_t *server, socket_t socket, const str
 	handler.onsend = http_session_onsend;
 
 	session = (struct http_session_t *)malloc(sizeof(*session) + HTTP_HEADER_CAPACITY + HTTP_RECV_BUFFER);
-	if (!session) return -1;
+	if (!session) return NULL;
 
 	memset(session, 0, sizeof(*session));
 	session->ref = 1;
@@ -374,9 +375,9 @@ int http_session_create(struct http_server_t *server, socket_t socket, const str
 	if (0 != aio_transport_recv(session->transport, session->data, HTTP_RECV_BUFFER))
 	{
 		aio_transport_destroy(session->transport);
-		return -1;
+		return NULL;
 	}
-	return 0;
+	return session;
 }
 
 int http_server_set_content_length(http_session_t* session, int64_t value)

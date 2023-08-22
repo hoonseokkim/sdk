@@ -116,15 +116,17 @@ static int http_rawdata(struct http_parser_t *http, const void* data, size_t byt
 {
 	void *p;
 	size_t capacity;
+
+	if (/*-1*/ bytes > HTTP_BODY_LENGTH_MAX || http->raw_size + bytes > HTTP_BODY_LENGTH_MAX + http->raw_header_offset)
+		return -E2BIG;
+
 	if(http->raw_capacity - http->raw_size < bytes + 1)
 	{
-		if(http->raw_size + bytes > HTTP_BODY_LENGTH_MAX + http->raw_header_offset)
-			return E2BIG;
 		capacity = (http->raw_capacity > 4*MB) ? 50*MB : (http->raw_capacity > 16*KB ? 2*MB : 8*KB);
 		capacity = (bytes + 1) > capacity ? (bytes + 1) : capacity;
 		p = realloc(http->raw, http->raw_capacity + capacity);
 		if(!p)
-			return ENOMEM;
+			return -ENOMEM;
 
 		http->raw_capacity += capacity;
 		http->raw = p;
@@ -223,14 +225,14 @@ static int http_header_handler(struct http_parser_t *http, size_t npos, size_t v
 	const char* name = http->raw + npos;
 	const char* value = http->raw + vpos;
 
-	if(0 == strcasecmp("Content-Length", name))
+	if (0 == strcasecmp("Content-Length", name))
 	{
 		// H4.4 Message Length, section 3, ignore content-length if in chunked mode
-		if(is_transfer_encoding_chunked(http))
+		if (is_transfer_encoding_chunked(http))
 			http->content_length = -1;
 		else
-			http->content_length = strtoll(value, NULL, 10);
-		assert(http->content_length >= 0 && (0==s_body_max_size || http->content_length < (int64_t)s_body_max_size));
+			http->content_length = (int64_t)strtoull(value, NULL, 10);
+		assert(http->content_length >= -1 && (0 == s_body_max_size || http->content_length < (int64_t)s_body_max_size));
 	}
 	else if(0 == strcasecmp("Connection", name))
 	{
@@ -274,7 +276,7 @@ static int http_header_add(struct http_parser_t *http, struct http_header_t* hea
 		size = http->header_capacity < 16 ? 16 : (http->header_size * 3 / 2);
 		p = (struct http_header_t*)realloc(http->headers, sizeof(struct http_header_t) * size);
 		if(!p)
-			return ENOMEM;
+			return -ENOMEM;
 
 		http->headers = p;
 		http->header_capacity = size;
@@ -691,6 +693,9 @@ static int http_parse_header_line(struct http_parser_t *http, const char* data, 
 			break;
 
 		case SM_HEADER_CR:
+			if ('\r' == c)
+				break;
+
 			if ('\n' != c)
 			{
 				assert(0);
@@ -722,12 +727,12 @@ static int http_parse_header_line(struct http_parser_t *http, const char* data, 
 
 				if (http->header_size < 1)
 				{
-					assert(0);
+					//assert(0);
 					return -1;
 				}
 
 				h = &http->headers[http->header_size - 1];
-				for (j = h->value.len; j < http->header.value.pos; j++)
+				for (j = h->value.pos + h->value.len; j < http->header.value.pos; j++)
 				{
 					http->raw[j] = ' '; // replace with SP
 				}
@@ -740,7 +745,7 @@ static int http_parse_header_line(struct http_parser_t *http, const char* data, 
 			{
 				if (http->header.name.len < 1)
 				{
-					assert(0);
+					//assert(0);
 					return -1;
 				}
 
@@ -1211,7 +1216,7 @@ int http_get_header(const struct http_parser_t* http, int idx, const char** name
 	assert(http->stateM >= SM_HEADER);
 
 	if(idx < 0 || idx >= http->header_size)
-		return EINVAL;
+		return -EINVAL;
 
 	*name = http->raw + http->headers[idx].name.pos;
 	*value = http->raw + http->headers[idx].value.pos;
@@ -1244,7 +1249,7 @@ int http_get_header_by_name2(const struct http_parser_t* http, const char* name,
 	{
 		if(0 == strcasecmp(http->raw + http->headers[i].name.pos, name))
 		{
-			*value = (int64_t)strtoll(http->raw + http->headers[i].value.pos, NULL, 10);
+			*value = (int64_t)strtoull(http->raw + http->headers[i].value.pos, NULL, 10);
 			return 0;
 		}
 	}

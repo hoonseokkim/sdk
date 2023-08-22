@@ -19,8 +19,9 @@ struct ice_agent_handler_t
 	void (*ongather)(void* param, int code);
 
 	/// ICE nominated
-	/// @param[in] streams stream connected bitmask flags, base 0, from Least Significant Bit(LSB), 1-connected, 0-failed
-	void (*onconnected)(void* param, uint64_t streams);
+	/// @param[in] flags connected stream bitmask flags, base 0, from Least Significant Bit(LSB), 1-connected, 0-failed
+	/// @param[in] mask all streams, base 0, from Least Significant Bit(LSB), 1-connected, 0-failed
+	void (*onconnected)(void* param, uint64_t flags, uint64_t mask);
 };
 
 struct ice_agent_t;
@@ -58,6 +59,9 @@ int ice_agent_get_remote_candidate(struct ice_agent_t* ice, uint8_t stream, uint
 
 int ice_agent_start(struct ice_agent_t* ice);
 int ice_agent_stop(struct ice_agent_t* ice);
+
+/// @param[in] enable 1-enable ice-lite, 0-disable ice-lite
+int ice_agent_set_icelite(struct ice_agent_t* ice, int enable);
 
 int ice_agent_input(struct ice_agent_t* ice, int protocol, const struct sockaddr* local, const struct sockaddr* remote, const void* data, int bytes);
 

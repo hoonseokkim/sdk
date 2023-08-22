@@ -1,3 +1,4 @@
+#if defined(OS_LINUX)
 #include "port/async-pipe.h"
 #include "sys/atomic.h"
 #include <sys/ioctl.h>
@@ -8,7 +9,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <aio.h>
-
+#include <signal.h>
 typedef struct
 {
 	int rpipe; // read only
@@ -173,3 +174,5 @@ int async_pipe_write(async_pipe_t pipe, const void* msg, int len, async_pipe_onw
 	}
 	return 0;
 }
+
+#endif
