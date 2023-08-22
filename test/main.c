@@ -13,6 +13,8 @@
 #define HTTP_TEST
 #endif
 
+void string_test(void);
+
 void heap_test(void);
 void rbtree_test(void);
 void timer_test(void);
@@ -33,6 +35,7 @@ void base64_test(void);
 void bitmap_test(void);
 void hweight_test(void);
 void ring_buffer_test(void);
+void channel_test(void);
 
 void unicode_test(void);
 void uri_parse_test(void);
@@ -47,6 +50,8 @@ void aio_socket_test4(void);
 void aio_socket_test_cancel(void);
 void ip_route_test(void);
 void onetime_test(void);
+void socketpair_test(void);
+void aio_poll_test(void);
 
 #if defined(HTTP_TEST)
 void http_test(void);
@@ -65,8 +70,11 @@ int main(int argc, char* argv[])
 	sigaction(SIGPIPE, &sa, 0);
 #endif
 
+	string_test();
+
 	heap_test();
 	rbtree_test();
+	channel_test();
 	timer_test();
 
 	socket_test();
@@ -81,6 +89,7 @@ int main(int argc, char* argv[])
 	semaphore_test();
 #endif
 	onetime_test();
+	socketpair_test();
 
 	bits_test();
 	stack_test();
@@ -101,6 +110,7 @@ int main(int argc, char* argv[])
 
 	ip_route_test();
 
+	aio_poll_test();
     aio_socket_test_cancel();
     aio_socket_test();
     aio_socket_test2();

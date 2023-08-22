@@ -237,13 +237,14 @@ static int stun_agent_onfailure(stun_agent_t* stun, const struct stun_message_t*
 	if (error)
 	{
 		// fixed: check nonce value to avoid recurse call
-		if (STUN_CREDENTIAL_LONG_TERM == req->auth.credential && (401 == error->v.errcode.code || 438 == error->v.errcode.code) && 0==req->auth.nonce[0])
+		if (STUN_CREDENTIAL_LONG_TERM == req->auth.credential && (401 == error->v.errcode.code || 438 == error->v.errcode.code) && 0!=req->auth.nonce[0] && req->authtimes < 1)
 		{
 			// 1. If the response is an error response with an error code of 401 (Unauthorized),
 			//    the client SHOULD retry the request with a new transaction.
 			// 2. If the response is an error response with an error code of 438 (Stale Nonce),
 			//    the client MUST retry the request, using the new NONCE supplied in the 438 (Stale Nonce) response.
 			req2 = stun_request_create(stun, req->rfc, req->handler, req->param);
+			req2->authtimes = req->authtimes + 1;
 			memcpy(&req2->addr, &req->addr, sizeof(struct stun_address_t));
 			memcpy(&req2->msg, &req->msg, sizeof(struct stun_message_t));
 			stun_request_setauth(req2, req->auth.credential, req->auth.usr, req->auth.pwd, req->auth.realm, req->auth.nonce);
@@ -357,7 +358,7 @@ static int stun_agent_onresponse(stun_agent_t* stun, int protocol, const struct 
 	if (!req)
 		return 0; //unknown request, ignore
 
-	if (req->addr.protocol != protocol || 0 != socket_addr_compare((const struct sockaddr*)&req->addr.host, local) || 0 != socket_addr_compare((const struct sockaddr*)&req->addr.peer, remote))
+	if (req->addr.protocol != protocol || (local && 0 != socket_addr_compare((const struct sockaddr*)&req->addr.host, local)) || 0 != socket_addr_compare((const struct sockaddr*)&req->addr.peer, remote))
 	{
 		assert(0);
 		stun_request_release(req);

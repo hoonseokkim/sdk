@@ -73,7 +73,7 @@ struct http_parser_t
 	struct http_header_t *headers;
 	int header_size; // the number of HTTP header
 	int header_capacity;
-	int content_length; // -1-don't have header, >=0-Content-Length
+	int64_t content_length; // -1-don't have header, >=0-Content-Length
 	int connection_close; // 1-close, 0-keep-alive, <0-don't set
 	int content_encoding;
 	int transfer_encoding;
@@ -82,7 +82,7 @@ struct http_parser_t
 
 	void (*callback)(void* param, const void* data, int len);
 	void* param;
-	size_t raw_body_length; // include previous callback data
+	int64_t raw_body_length; // include previous callback data
 };
 
 static size_t s_body_max_size = 0*MB;
@@ -156,7 +156,7 @@ static int http_body(struct http_parser_t* http, const void* data, size_t bytes)
 		// saved body
 		http->raw_body_length += bytes;
 		assert(http->raw_body_length + http->raw_header_offset <= http->raw_size);
-		assert(-1 == http->content_length || http->raw_body_length <= (size_t)http->content_length);
+		assert(-1 == http->content_length || http->raw_body_length <= http->content_length);
 	}
 
 	return 0;
@@ -229,8 +229,8 @@ static int http_header_handler(struct http_parser_t *http, size_t npos, size_t v
 		if(is_transfer_encoding_chunked(http))
 			http->content_length = -1;
 		else
-			http->content_length = atoi(value);
-		assert(http->content_length >= 0 && (0==s_body_max_size || http->content_length < (int)s_body_max_size));
+			http->content_length = strtoll(value, NULL, 10);
+		assert(http->content_length >= 0 && (0==s_body_max_size || http->content_length < (int64_t)s_body_max_size));
 	}
 	else if(0 == strcasecmp("Connection", name))
 	{
@@ -376,7 +376,9 @@ static int http_parse_request_line(struct http_parser_t *http, const char* data,
 				break;
 
 			default:
-				http->stateM = SM_REQUEST_URI;
+				*(v[SM_REQUEST_URI - SM_REQUEST_START]) = *(v[SM_REQUEST_SP2 - SM_REQUEST_START]) + *(v[SM_REQUEST_VERSION - SM_REQUEST_START]) - *(v[SM_REQUEST_URI - SM_REQUEST_START - 1]);
+				http->stateM = SM_REQUEST_SP2;
+				i -= 1; // go back
 				break;
 			}
 			break;
@@ -409,7 +411,7 @@ static int http_parse_request_line(struct http_parser_t *http, const char* data,
 				|| http->header.name.len < 5
 				|| 3 != sscanf(http->raw + http->header.name.pos, "%16[^/]/%d.%d", http->protocol, &http->vermajor, &http->verminor))
 			{
-				assert(0);
+				//assert(0);
 				return -1;
 			}
 
@@ -532,7 +534,7 @@ static int http_parse_status_line(struct http_parser_t *http, const char* data, 
 			if (http->header.name.len < 5 || 3 != sscanf(http->raw + http->header.name.pos, "%16[^/]/%d.%d", http->protocol, &http->vermajor, &http->verminor)
 				// H6.1.1 Status Code and Reason Phrase (p26)
 				// The Status-Code element is a 3-digit integer result code
-				|| http->header.value.len != 3 || http->u.reply.reason.len < 1)
+				|| http->header.value.len != 3 /*|| http->u.reply.reason.len < 1*/ )
 			{
 				assert(0);
 				return -1;
@@ -702,7 +704,7 @@ static int http_parse_header_line(struct http_parser_t *http, const char* data, 
 			assert('\n' == c);
 
 			// copy header line
-			if (0 != http_rawdata(http, data, i))
+			if (0 != http_rawdata(http, data, i+1))
 				return -ENOMEM;
 
 			if (0 == http->header.value.pos)
@@ -885,10 +887,11 @@ static int http_parse_chunked(struct http_parser_t *http, const char* data, size
 				return -1;
 			}
 
-			http->stateM = CHUNK_DATA;
+			http->stateM = http->chunk.len ? CHUNK_DATA : CHUNK_TRAILER_START;
 			break;
 
 		case CHUNK_DATA:
+			assert(http->chunk.len > 0);
 			assert(http->chunk.loaded <= http->chunk.len);
 			n = http->chunk.len - http->chunk.loaded;
 			n = i + n > len ? len - i : n;
@@ -910,7 +913,7 @@ static int http_parse_chunked(struct http_parser_t *http, const char* data, size
 				break;
 
 			case '\n':
-				http->stateM = http->chunk.len ? CHUNK_START : CHUNK_TRAILER_START;
+				http->stateM = CHUNK_START;
 				http->chunk.len = 0;
 				http->chunk.loaded = 0;
 				break;
@@ -1034,6 +1037,12 @@ void http_parser_clear(struct http_parser_t* http)
 	http->location = 0;
 }
 
+void http_parser_reset(http_parser_t* parser, enum HTTP_PARSER_MODE mode)
+{
+	parser->request = mode;
+	http_parser_clear(parser);	
+}
+
 int http_parser_input(struct http_parser_t* http, const void* data, size_t *bytes)
 {
 	enum { INPUT_NEEDMORE = 1, INPUT_DONE = 0, INPUT_HEADER = 2, };
@@ -1075,6 +1084,7 @@ int http_parser_input(struct http_parser_t* http, const void* data, size_t *byte
 		if(is_transfer_encoding_chunked(http))
 		{
 			r = http_parse_chunked(http, ptr, end - ptr);
+			ptr += r;
 		}
 		else
 		{
@@ -1111,11 +1121,11 @@ int http_parser_input(struct http_parser_t* http, const void* data, size_t *byte
 			}
 			else
 			{
-				assert(http->raw_body_length <= (size_t)http->content_length);
-				n = end - ptr + http->raw_body_length > (size_t)http->content_length ? (size_t)http->content_length - http->raw_body_length : end - ptr;
+				assert(http->raw_body_length <= http->content_length);
+				n = end - ptr + http->raw_body_length > http->content_length ? (size_t)(http->content_length - http->raw_body_length) : end - ptr;
 				r = http_body(http, ptr, n);
 				ptr += n;
-				if(http->raw_body_length >= (size_t)http->content_length)
+				if(http->raw_body_length >= http->content_length)
 					http->stateM = SM_DONE;
 			}
 		}
@@ -1127,10 +1137,10 @@ int http_parser_input(struct http_parser_t* http, const void* data, size_t *byte
 	*bytes = 0;
 	if (SM_DONE == http->stateM)
 	{
-		assert(http->content_length < 0 || http->raw_body_length == (size_t)http->content_length);
+		assert(http->content_length < 0 || http->raw_body_length == http->content_length);
 		*bytes = end - ptr;
 	}
-	return http->stateM == SM_DONE ? INPUT_DONE : (SM_BODY == http->stateM ? INPUT_HEADER : INPUT_NEEDMORE);
+	return http->stateM == SM_DONE ? INPUT_DONE : (SM_BODY <= http->stateM ? INPUT_HEADER : INPUT_NEEDMORE);
 }
 
 size_t http_get_max_size(void)
@@ -1146,7 +1156,7 @@ int http_set_max_size(size_t bytes)
 
 int http_get_version(const struct http_parser_t* http, char protocol[64], int *major, int *minor)
 {
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 	assert(64 >= sizeof(http->protocol));
 	strcpy(protocol, http->protocol);
 	*major = http->vermajor;
@@ -1156,28 +1166,28 @@ int http_get_version(const struct http_parser_t* http, char protocol[64], int *m
 
 int http_get_status_code(const struct http_parser_t* http)
 {
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 	assert(HTTP_PARSER_RESPONSE == http->request);
 	return http->u.reply.code;
 }
 
 const char* http_get_status_reason(const struct http_parser_t* http)
 {
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 	assert(HTTP_PARSER_RESPONSE == http->request);
 	return http->raw + http->u.reply.reason.pos;
 }
 
 const char* http_get_request_method(const struct http_parser_t* http)
 {
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 	assert(HTTP_PARSER_REQUEST == http->request);
 	return http->raw + http->u.req.method.pos;
 }
 
 const char* http_get_request_uri(const struct http_parser_t* http)
 {
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 	assert(HTTP_PARSER_REQUEST == http->request);
 	return http->raw + http->u.req.uri.pos;
 }
@@ -1192,13 +1202,13 @@ const void* http_get_content(const struct http_parser_t* http)
 
 int http_get_header_count(const struct http_parser_t* http)
 {
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 	return http->header_size;
 }
 
 int http_get_header(const struct http_parser_t* http, int idx, const char** name, const char** value)
 {
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 
 	if(idx < 0 || idx >= http->header_size)
 		return EINVAL;
@@ -1211,7 +1221,7 @@ int http_get_header(const struct http_parser_t* http, int idx, const char** name
 const char* http_get_header_by_name(const struct http_parser_t* http, const char* name)
 {
 	int i;
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 
 	for(i = 0; i < http->header_size; i++)
 	{
@@ -1225,16 +1235,16 @@ const char* http_get_header_by_name(const struct http_parser_t* http, const char
 	return NULL; // not found
 }
 
-int http_get_header_by_name2(const struct http_parser_t* http, const char* name, int *value)
+int http_get_header_by_name2(const struct http_parser_t* http, const char* name, int64_t *value)
 {
 	int i;
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 
 	for(i = 0; i < http->header_size; i++)
 	{
 		if(0 == strcasecmp(http->raw + http->headers[i].name.pos, name))
 		{
-			*value = atoi(http->raw + http->headers[i].value.pos);
+			*value = (int64_t)strtoll(http->raw + http->headers[i].value.pos, NULL, 10);
 			return 0;
 		}
 	}
@@ -1242,17 +1252,17 @@ int http_get_header_by_name2(const struct http_parser_t* http, const char* name,
 	return -1;
 }
 
-int http_get_content_length(const struct http_parser_t* http)
+int64_t http_get_content_length(const struct http_parser_t* http)
 {
-	assert(http->stateM>=SM_BODY);
-	if(-1 == http->content_length)
-		return (int)http->raw_body_length;
+	assert(http->stateM >= SM_HEADER);
+//	if(-1 == http->content_length && http->callback)
+//		return http->raw_body_length;
 	return http->content_length;
 }
 
 int http_get_connection(const struct http_parser_t* http)
 {
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 	return http->connection_close;
 }
 
@@ -1263,7 +1273,7 @@ const char* http_get_content_type(const struct http_parser_t* http)
 
 const char* http_get_content_encoding(const struct http_parser_t* http)
 {
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 	if(0 == http->content_encoding)
 		return NULL;
 	return http->raw + http->content_encoding;
@@ -1271,7 +1281,7 @@ const char* http_get_content_encoding(const struct http_parser_t* http)
 
 const char* http_get_transfer_encoding(const struct http_parser_t* http)
 {
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 	if(0 == http->transfer_encoding)
 		return NULL;
 	return http->raw + http->transfer_encoding;
@@ -1279,7 +1289,7 @@ const char* http_get_transfer_encoding(const struct http_parser_t* http)
 
 const char* http_get_cookie(const struct http_parser_t* http)
 {
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 	if(0 == http->cookie)
 		return NULL;
 	return http->raw + http->cookie;
@@ -1287,7 +1297,7 @@ const char* http_get_cookie(const struct http_parser_t* http)
 
 const char* http_get_location(const struct http_parser_t* http)
 {
-	assert(http->stateM>=SM_BODY);
+	assert(http->stateM >= SM_HEADER);
 	assert(HTTP_PARSER_RESPONSE == http->request);
 	if(0 == http->location)
 		return NULL;

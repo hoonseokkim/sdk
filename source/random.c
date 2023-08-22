@@ -2,6 +2,7 @@
 #include <time.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 
 #if defined(OS_WINDOWS) || defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
@@ -19,17 +20,18 @@ int read_random(void* ptr, int bytes)
 
 #elif defined(OS_LINUX) || defined(OS_MAC)
 #include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 static int read_random_file(const char *file, void* ptr, int bytes)
 {
-    int n;
-    FILE* fp;
-    fp = fopen(file, "rb");
-    if (NULL == fp)
+    int fd = open(file, O_RDONLY);
+    int err = -1;
+    if (fd == -1)
         return -1;
-    n = fread(ptr, bytes, 1, fp);
-    fclose(fp);
-    return n;
+    err = (int)read(fd, ptr, bytes);
+    close(fd);
+    return err;
 }
 
 int read_random(void* ptr, int bytes)

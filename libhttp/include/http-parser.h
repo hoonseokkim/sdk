@@ -1,6 +1,7 @@
 #ifndef _http_parser_h_
 #define _http_parser_h_
 
+#include <stdint.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -16,8 +17,8 @@ enum HTTP_PARSER_MODE {
 
 /// get/set maximum body size(global setting)
 /// @param[in] bytes 0-unlimited, other-limit bytes
-size_t http_get_max_size(void);
 int http_set_max_size(size_t bytes);
+size_t http_get_max_size(void);
 
 /// create
 /// @param[in] mode 1-server mode, 0-client mode
@@ -28,12 +29,15 @@ http_parser_t* http_parser_create(enum HTTP_PARSER_MODE mode, void(*ondata)(void
 /// @return 0-ok, other-error
 int http_parser_destroy(http_parser_t* parser);
 
-/// clear state
+/// clear state(deprecated, use http_parser_reset instead)
 void http_parser_clear(http_parser_t* parser);
+
+/// reset state(clear + set mode)
+void http_parser_reset(http_parser_t* parser, enum HTTP_PARSER_MODE mode);
 
 /// input data
 /// @param[in] data content
-/// @param[in/out] bytes out-remain bytes
+/// @param[in,out] bytes out-remain bytes
 /// @return 1-need more data, 0-receive done, <0-error
 int http_parser_input(http_parser_t* parser, const void* data, size_t *bytes);
 
@@ -56,9 +60,9 @@ int http_get_header(const http_parser_t* parser, int idx, const char** name, con
 /// @return NULL-don't found header, other-header value
 const char* http_get_header_by_name(const http_parser_t* parser, const char* name);
 /// @return 0-ok, <0-don't have header
-int http_get_header_by_name2(const http_parser_t* parser, const char* name, int *value);
+int http_get_header_by_name2(const http_parser_t* parser, const char* name, int64_t *value);
 /// @return >=0-content-length, <0-don't have content-length header
-int http_get_content_length(const http_parser_t* parser);
+int64_t http_get_content_length(const http_parser_t* parser);
 /// @return 1-close, 0-keep-alive, <0-don't have connection header
 int http_get_connection(const http_parser_t* parser);
 /// @return Content-Type, NULL-don't have this header

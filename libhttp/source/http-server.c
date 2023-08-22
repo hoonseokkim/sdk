@@ -1,7 +1,7 @@
 #include "http-server.h"
 #include "http-parser.h"
 #include "http-server-internal.h"
-#include "aio-tcp-transport.h"
+#include "aio-transport.h"
 #include "aio-accept.h"
 #include "sockutil.h"
 #include <stdlib.h>
@@ -29,16 +29,11 @@ static int http_server_listen(struct http_server_t *server, const char* ip, int 
 	socket_t socket;
 
 	// create server socket(IPv6 and IPv4)
-	socket = socket_tcp_listen_ipv6(ip, (u_short)port, SOMAXCONN, 1);
+	socket = socket_tcp_listen(0 /*AF_UNSPEC*/, ip, (u_short)port, SOMAXCONN, 1, 1);
 	if (socket_invalid == socket)
 	{
-		// try IPv4 only
-		socket = socket_tcp_listen(ip, (u_short)port, SOMAXCONN);
-		if (socket_invalid == socket)
-		{
-			printf("http_server_create(%s, %d): create socket error.\n", ip, port);
-			return -1;
-		}
+		printf("http_server_create(%s, %d): create socket error.\n", ip, port);
+		return -1;
 	}
 
 	server->aio = aio_accept_start(socket, http_server_onaccept, server);
@@ -88,6 +83,12 @@ int http_server_set_handler(struct http_server_t* http, http_server_handler hand
 	return 0;
 }
 
+void http_server_websocket_sethandler(http_server_t* http, const struct websocket_handler_t* handler, void* param)
+{
+	memcpy(&http->wshandler, handler, sizeof(http->wshandler));
+	http->wsparam = param;
+}
+
 // Request
 int http_server_get_client(struct http_session_t *session, char ip[65], unsigned short *port)
 {
@@ -103,8 +104,10 @@ const char* http_server_get_header(struct http_session_t *session, const char *n
 
 int http_server_get_content(struct http_session_t *session, void **content, size_t *length)
 {
-	*content = (void*)http_get_content(session->parser);
-	*length = http_get_content_length(session->parser);
+	//*content = (void*)http_get_content(session->parser);
+	//*length = (size_t)http_get_content_length(session->parser);
+	*content = session->payload.ptr;
+	*length = session->payload.len;
 	return 0;
 }
 

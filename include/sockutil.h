@@ -23,10 +23,14 @@
 /// @param[in] backlog Maximum queue length specifiable by listen, use SOMAXCONN if you don't known how to choose value
 /// @param[in] ipv4 0-ipv6 only, 1-ipv6 dual stack
 /// @return >=0-socket, <0-socket_error(by socket_geterror())
-static inline socket_t socket_tcp_listen(IN const char* ipv4_or_dns, IN u_short port, IN int backlog);
 static inline socket_t socket_tcp_listen_ipv6(IN const char* ipv4_or_ipv6_or_dns, IN u_short port, IN int backlog, IN int ipv4);
-static inline socket_t socket_udp_bind(IN const char* ipv4_or_dns, IN u_short port);
+static inline socket_t socket_tcp_listen_ipv4(IN const char* ipv4_or_dns, IN u_short port, IN int backlog);
+static inline socket_t socket_udp_bind_ipv4(IN const char* ipv4_or_dns, IN u_short port);
 static inline socket_t socket_udp_bind_ipv6(IN const char* ipv4_or_ipv6_or_dns, IN u_short port, IN int ipv4);
+static inline socket_t socket_bind_addr(const struct sockaddr* addr, int socktype, int reuse, int dual);
+
+/// @return 0-ok, <0-socket_error(by socket_geterror())
+static inline int socket_udp_multicast(IN socket_t sock, IN const char* group, IN const char* source, IN int ttl);
 
 /// @Notice: need restore block status
 /// @param[in] timeout ms, <0-forever
@@ -51,6 +55,9 @@ static inline int socket_send_v_all_by_time(IN socket_t sock, IN socket_bufvec_t
 /// @param[out] local ip destination addr(local address) without port
 static inline int socket_recvfrom_addr(IN socket_t sock, OUT socket_bufvec_t* vec, IN int n, IN int flags, OUT struct sockaddr* peer, OUT socklen_t* peerlen, OUT struct sockaddr* local, OUT socklen_t* locallen);
 static inline int socket_sendto_addr(IN socket_t sock, IN const socket_bufvec_t* vec, IN int n, IN int flags, IN const struct sockaddr* peer, IN socklen_t peerlen, IN const struct sockaddr* local, IN socklen_t locallen);
+
+static inline int64_t socket_poll_read(socket_t s[], int n, int timeout);
+static inline int64_t socket_poll_readv(int timeout, int n, ...);
 
 //////////////////////////////////////////////////////////////////////////
 /// socket connect
@@ -104,12 +111,12 @@ static inline socket_t socket_connect_host(IN const char* ipv4_or_ipv6_or_dns, I
 			continue;
 
 		// fixed ios getaddrinfo don't set port if nodename is ipv4 address
-		socket_addr_setport(ptr->ai_addr, ptr->ai_addrlen, port);
+		socket_addr_setport(ptr->ai_addr, (socklen_t)ptr->ai_addrlen, port);
 
 		if (timeout < 0)
-			r = socket_connect(sock, ptr->ai_addr, ptr->ai_addrlen);
+			r = socket_connect(sock, ptr->ai_addr, (socklen_t)ptr->ai_addrlen);
 		else
-			r = socket_connect_by_time(sock, ptr->ai_addr, ptr->ai_addrlen, timeout);
+			r = socket_connect_by_time(sock, ptr->ai_addr, (socklen_t)ptr->ai_addrlen, timeout);
 
 		if (0 != r)
 			socket_close(sock);
@@ -172,140 +179,19 @@ static inline int socket_bind_any(IN socket_t sock, IN u_short port)
 
 /// TCP/UDP socket bind to address(IPv4/IPv6)
 /// @param[in] socktype SOCK_DGRAM/SOCK_STREAM
-static inline socket_t socket_bind_addr(const struct sockaddr* addr, int socktype)
+/// @param[in] reuse 1-enable reuse addr
+/// @param[in] dual 1-enable ipv6 dual stack
+static inline socket_t socket_bind_addr(const struct sockaddr* addr, int socktype, int reuse, int dual)
 {
 	socket_t s;
 
+	assert(AF_INET == addr->sa_family || AF_INET6 == addr->sa_family);
 	s = socket(addr->sa_family, socktype, 0);
 	if (socket_invalid == s)
 		return socket_invalid;
 
-	if (0 != socket_bind(s, addr, socket_addr_len(addr)))
-	{
-		socket_close(s);
-		return socket_invalid;
-	}
-
-	return s;
-}
-
-/// create a new TCP socket, bind, and listen
-/// @param[in] ip socket bind local address, NULL-bind any address
-/// @param[in] port bind local port
-/// @param[in] backlog the maximum length to which the queue of pending connections for socket may grow
-/// @return socket_invalid-error, use socket_geterror() to get error code, other-ok 
-static inline socket_t socket_tcp_listen(IN const char* ipv4_or_dns, IN u_short port, IN int backlog)
-{
-	int r;
-	socket_t sock;
-	char portstr[22];
-	struct addrinfo hints, *addr, *ptr;
-
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_INET; // IPv4 only
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
-	snprintf(portstr, sizeof(portstr), "%hu", port);
-	r = getaddrinfo(ipv4_or_dns, portstr, &hints, &addr);
-	if (0 != r)
-		return socket_invalid;
-
-	r = -1; // not found
-    sock = socket_invalid;
-	for (ptr = addr; 0 != r && ptr != NULL; ptr = ptr->ai_next)
-	{
-		assert(AF_INET == ptr->ai_family);
-		sock = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol);
-		if (socket_invalid == sock)
-			continue;
-
-		// reuse addr
-		socket_setreuseaddr(sock, 1);
-
-		// fixed ios getaddrinfo don't set port if nodename is ipv4 address
-		socket_addr_setport(ptr->ai_addr, ptr->ai_addrlen, port);
-
-		r = socket_bind(sock, ptr->ai_addr, ptr->ai_addrlen);
-		if (0 == r)
-			r = socket_listen(sock, backlog);
-
-		if (0 != r)
-			socket_close(sock);
-	}
-
-	freeaddrinfo(addr);
-	return 0 == r ? sock : socket_invalid;
-}
-
-/// create a new TCP socket, bind, and listen
-/// @param[in] ipv4_or_ipv6_or_dns socket bind local address, NULL-bind any address
-/// @param[in] port bind local port
-/// @param[in] backlog the maximum length to which the queue of pending connections for socket may grow
-/// @param[in] ipv4 0-ipv6 only, 1-ipv6 dual stack
-/// @return socket_invalid-error, use socket_geterror() to get error code, other-ok 
-static inline socket_t socket_tcp_listen_ipv6(IN const char* ipv4_or_ipv6_or_dns, IN u_short port, IN int backlog, IN int ipv4)
-{
-	int r;
-	socket_t sock;
-	char portstr[22];
-	struct addrinfo hints, *addr, *ptr;
-
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_INET6;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV | AI_V4MAPPED;
-	snprintf(portstr, sizeof(portstr), "%hu", port);
-	r = getaddrinfo(ipv4_or_ipv6_or_dns, portstr, &hints, &addr);
-	if (0 != r)
-		return socket_invalid;
-
-	r = -1; // not found
-    sock = socket_invalid;
-	for (ptr = addr; 0 != r && ptr != NULL; ptr = ptr->ai_next)
-	{
-		assert(AF_INET6 == ptr->ai_family);
-		sock = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol);
-		if (socket_invalid == sock)
-			continue;
-
-		// Dual-Stack Socket Option
-		// https://msdn.microsoft.com/en-us/library/windows/desktop/bb513665(v=vs.85).aspx
-		// By default, an IPv6 socket created on Windows Vista and later only operates over the IPv6 protocol.
-		if (0 != socket_setreuseaddr(sock, 1) || 0 != socket_setipv6only(sock, ipv4 ? 0 : 1))
-		{
-			socket_close(sock);
-			continue;
-		}
-
-		// fixed ios getaddrinfo don't set port if nodename is ipv4 address
-		socket_addr_setport(ptr->ai_addr, ptr->ai_addrlen, port);
-
-		r = socket_bind(sock, ptr->ai_addr, ptr->ai_addrlen);
-		if (0 == r)
-			r = socket_listen(sock, backlog);
-
-		if (0 != r)
-			socket_close(sock);
-	}
-
-	freeaddrinfo(addr);
-	return 0 == r ? sock : socket_invalid;
-}
-
-/// @param[in] reuse 1-enable reuse addr
-/// @param[in] dual 1-enable ipv6 dual stack
-/// @return socket_invalid-error, other-ok
-static inline socket_t socket_udp_bind_addr(IN const struct sockaddr* addr, int reuse, int dual)
-{
-	socket_t s;
-	
-	assert(AF_INET == addr->sa_family || AF_INET6 == addr->sa_family);
-	s = socket(addr->sa_family, SOCK_DGRAM, 0);
-	if (socket_invalid == s)
-		return socket_invalid;
-
 	// disable reuse addr(fixed rtp port reuse error)
-	if (reuse && 0 != socket_setreuseaddr(s, 1))
+	if (reuse && 0 != socket_setreuseport(s, 1))
 	{
 		socket_close(s);
 		return socket_invalid;
@@ -329,20 +215,101 @@ static inline socket_t socket_udp_bind_addr(IN const struct sockaddr* addr, int 
 	return s;
 }
 
-/// create a new UDP socket and bind with ip/port
+/// @param[in] reuse 1-enable reuse addr
+/// @param[in] dual 1-enable ipv6 dual stack
+/// @return socket_invalid-error, other-ok
+static inline socket_t socket_udp_bind_addr(IN const struct sockaddr* addr, int reuse, int dual)
+{
+	return socket_bind_addr(addr, SOCK_DGRAM, reuse, dual);
+}
+
+/// create a new TCP socket, bind, and listen
+/// @param[in] family AF_INET-IPv4, AF_INET6-IPv6, AF_UNSPEC-any
 /// @param[in] ipv4_or_ipv6_or_dns socket bind local address, NULL-bind any address
 /// @param[in] port bind local port
+/// @param[in] backlog the maximum length to which the queue of pending connections for socket may grow
+/// @param[in] reuse 1-enable reuse addr
+/// @param[in] dual 1-enable ipv6 dual stack
 /// @return socket_invalid-error, use socket_geterror() to get error code, other-ok 
-static inline socket_t socket_udp_bind(IN const char* ipv4_or_ipv6_or_dns, IN u_short port)
+static inline socket_t socket_tcp_listen(IN int family, IN const char* ipv4_or_ipv6_or_dns, IN u_short port, IN int backlog, int reuse, int dual)
+{
+	int r;
+	socket_t sock;
+	char portstr[22];
+	struct addrinfo hints, *addr, *ptr;
+
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = family;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV | (AF_INET6 == family ? AI_V4MAPPED : 0);
+	snprintf(portstr, sizeof(portstr), "%hu", port);
+	r = getaddrinfo(ipv4_or_ipv6_or_dns, portstr, &hints, &addr);
+	if (0 != r)
+		return socket_invalid;
+
+	r = -1; // not found
+    sock = socket_invalid;
+	for (ptr = addr; 0 != r && ptr != NULL; ptr = ptr->ai_next)
+	{
+		assert(AF_INET == ptr->ai_family || AF_INET6 == ptr->ai_family);
+		
+		// fixed ios getaddrinfo don't set port if nodename is ipv4 address
+		socket_addr_setport(ptr->ai_addr, (socklen_t)ptr->ai_addrlen, port);
+
+		//sock = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol);
+		assert(SOCK_STREAM == ptr->ai_socktype);
+		assert(ptr->ai_family == ptr->ai_addr->sa_family);
+		sock = socket_bind_addr(ptr->ai_addr, ptr->ai_socktype, reuse, dual);
+		if (socket_invalid == sock)
+			continue;
+
+		r = socket_listen(sock, backlog);
+		if (0 != r)
+			socket_close(sock);
+	}
+
+	freeaddrinfo(addr);
+	return 0 == r ? sock : socket_invalid;
+}
+
+/// create a new IPv4 TCP socket, bind, and listen
+/// @param[in] ipv4_or_dns socket bind local address, NULL-bind any address
+/// @param[in] port bind local port
+/// @param[in] backlog the maximum length to which the queue of pending connections for socket may grow
+/// @return socket_invalid-error, use socket_geterror() to get error code, other-ok 
+static inline socket_t socket_tcp_listen_ipv4(IN const char* ipv4_or_dns, IN u_short port, IN int backlog)
+{
+	return socket_tcp_listen(AF_INET, ipv4_or_dns, port, backlog, 0, 0);
+}
+
+/// create a new IPv6 TCP socket, bind, and listen
+/// @param[in] ipv4_or_ipv6_or_dns socket bind local address, NULL-bind any address
+/// @param[in] port bind local port
+/// @param[in] backlog the maximum length to which the queue of pending connections for socket may grow
+/// @param[in] ipv4 0-ipv6 only, 1-ipv6 dual stack
+/// @return socket_invalid-error, use socket_geterror() to get error code, other-ok 
+static inline socket_t socket_tcp_listen_ipv6(IN const char* ipv4_or_ipv6_or_dns, IN u_short port, IN int backlog, IN int ipv4)
+{
+	return socket_tcp_listen(AF_INET6, ipv4_or_ipv6_or_dns, port, backlog, 0, ipv4);
+}
+
+/// create a new UDP socket and bind with ip/port
+/// @param[in] family AF_INET-IPv4, AF_INET6-IPv6, AF_UNSPEC-any
+/// @param[in] ipv4_or_ipv6_or_dns socket bind local address, NULL-bind any address
+/// @param[in] port bind local port
+/// @param[in] reuse 1-enable reuse addr
+/// @param[in] dual 1-enable ipv6 dual stack
+/// @return socket_invalid-error, use socket_geterror() to get error code, other-ok 
+static inline socket_t socket_udp_bind(IN int family, IN const char* ipv4_or_ipv6_or_dns, IN u_short port, int reuse, int dual)
 {
 	socket_t sock;
 	char portstr[16];
 	struct addrinfo hints, *addr, *ptr;
 
 	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_INET; // IPv4 only
+	hints.ai_family = family;
 	hints.ai_socktype = SOCK_DGRAM;
-	hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
+	hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV | (AF_INET6 == family ? AI_V4MAPPED : 0);
 	snprintf(portstr, sizeof(portstr), "%hu", port);
 	if (0 != getaddrinfo(ipv4_or_ipv6_or_dns, portstr, &hints, &addr))
 		return socket_invalid;
@@ -350,50 +317,73 @@ static inline socket_t socket_udp_bind(IN const char* ipv4_or_ipv6_or_dns, IN u_
     sock = socket_invalid;
 	for (ptr = addr; socket_invalid == sock && ptr != NULL; ptr = ptr->ai_next)
 	{
-		assert(AF_INET == ptr->ai_family);
-		
+		assert(AF_INET == ptr->ai_family || AF_INET6 == ptr->ai_family);
+
 		// fixed ios getaddrinfo don't set port if nodename is ipv4 address
-		socket_addr_setport(ptr->ai_addr, ptr->ai_addrlen, port);
-		
-		sock = socket_udp_bind_addr(ptr->ai_addr, 0, 0);
+		socket_addr_setport(ptr->ai_addr, (socklen_t)ptr->ai_addrlen, port);
+
+		//sock = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol);
+		assert(SOCK_DGRAM == ptr->ai_socktype);
+		assert(ptr->ai_family == ptr->ai_addr->sa_family);
+		sock = socket_udp_bind_addr(ptr->ai_addr, reuse, dual);
 	}
 
 	freeaddrinfo(addr);
 	return sock;
 }
 
-/// create a new UDP socket and bind with ip/port
+/// create a new IPv4 UDP socket and bind with ip/port
+/// @param[in] ipv4_or_dns socket bind local address, NULL-bind any address
+/// @param[in] port bind local port
+/// @return socket_invalid-error, use socket_geterror() to get error code, other-ok 
+static inline socket_t socket_udp_bind_ipv4(IN const char* ipv4_or_dns, IN u_short port)
+{
+	return socket_udp_bind(AF_INET, ipv4_or_dns, port, 0, 0);
+}
+
+/// create a new IPv6 UDP socket and bind with ip/port
 /// @param[in] ipv4_or_ipv6_or_dns socket bind local address, NULL-bind any address
 /// @param[in] port bind local port
 /// @param[in] ipv4 0-ipv6 only, 1-ipv6 dual stack
 /// @return socket_invalid-error, use socket_geterror() to get error code, other-ok 
 static inline socket_t socket_udp_bind_ipv6(IN const char* ipv4_or_ipv6_or_dns, IN u_short port, IN int ipv4)
 {
-	socket_t sock;
-	char portstr[16];
-	struct addrinfo hints, *addr, *ptr;
+	return socket_udp_bind(AF_INET6, ipv4_or_ipv6_or_dns, port, 0, ipv4);
+}
 
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_INET6;
-	hints.ai_socktype = SOCK_DGRAM;
-	hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
-	snprintf(portstr, sizeof(portstr), "%hu", port);
-	if (0 != getaddrinfo(ipv4_or_ipv6_or_dns, portstr, &hints, &addr))
-		return socket_invalid;
+static inline int socket_udp_multicast(IN socket_t sock, IN const char* group, IN const char* source, IN int ttl)
+{
+    int r;
+    int domain;
+    u_short port;
+    char local[SOCKET_ADDRLEN];
 
-    sock = socket_invalid;
-	for (ptr = addr; socket_invalid == sock && ptr != NULL; ptr = ptr->ai_next)
-	{
-		assert(AF_INET6 == ptr->ai_family);
-
-		// fixed ios getaddrinfo don't set port if nodename is ipv4 address
-		socket_addr_setport(ptr->ai_addr, ptr->ai_addrlen, port);
-
-		sock = socket_udp_bind_addr(ptr->ai_addr, 0, ipv4);
-	}
-
-	freeaddrinfo(addr);
-	return sock;
+    r = socket_getdomain(sock, &domain);
+    if(AF_INET == domain)
+    {
+        r = r ? r : socket_getname(sock, local, &port);
+        r = r ? r : socket_setopt_bool(sock, IP_MULTICAST_LOOP, 0); // disable Loop
+        r = r ? r : socket_setopt_bool(sock, IP_MULTICAST_TTL, ttl <= 0 ? 1 : ttl); // ttl default 1
+        // r = r ? r : setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, &imr.imr_interface.s_addr, sizeof(struct in_addr)); // bind to interface
+        if(source && *source)
+            r = r ? r : socket_multicast_join_source(sock, group, source, local);
+        else
+            r = r ? r : socket_multicast_join(sock, group, local);
+        //socket_multicast_leave_source(sock, group, source, local);
+    }
+    else if(AF_INET6 == domain)
+    {
+        r = r ? r : socket_setopt_bool(sock, IPV6_MULTICAST_LOOP, 0); // disable Loop
+        r = r ? r : socket_setopt_bool(sock, IPV6_MULTICAST_HOPS, ttl <= 0 ? 1 : ttl); // ttl default 1
+        r = r ? r : socket_multicast_join6(sock, group);
+    }
+    else
+    {
+        assert(0);
+        r = -1;
+    }
+    
+    return r;
 }
 
 /// wait for client connection
@@ -595,7 +585,7 @@ static inline int socket_recvfrom_addr(IN socket_t sock, OUT socket_bufvec_t* ve
 	char control[64];
 	
 #if defined(OS_WINDOWS) && _WIN32_WINNT >= 0x0600
-	struct cmsghdr *cmsg;
+	WSACMSGHDR* cmsg;
 	struct in_pktinfo* pktinfo;
 	struct in6_pktinfo* pktinfo6;
 	static INIT_ONCE wsarecvmsgonce;
@@ -618,7 +608,7 @@ static inline int socket_recvfrom_addr(IN socket_t sock, OUT socket_bufvec_t* ve
 		return r;
 
 	*peerlen = wsamsg.namelen;
-	for (cmsg = CMSG_FIRSTHDR(&wsamsg); !!cmsg && local && locallen; cmsg = CMSG_NXTHDR(&wsamsg, cmsg))
+	for (cmsg = WSA_CMSG_FIRSTHDR(&wsamsg); !!cmsg && local && locallen; cmsg = WSA_CMSG_NXTHDR(&wsamsg, cmsg))
 	{
 		if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_PKTINFO && *locallen >= sizeof(struct sockaddr_in))
 		{
@@ -642,7 +632,7 @@ static inline int socket_recvfrom_addr(IN socket_t sock, OUT socket_bufvec_t* ve
 
 	return bytes;
 	
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_MAC)
 	struct msghdr hdr;
 	struct cmsghdr *cmsg;
 	memset(&hdr, 0, sizeof(hdr));
@@ -654,7 +644,7 @@ static inline int socket_recvfrom_addr(IN socket_t sock, OUT socket_bufvec_t* ve
 	hdr.msg_control = control;
 	hdr.msg_controllen = sizeof(control);
 	hdr.msg_flags = 0;
-	r = recvmsg(sock, &hdr, flags);
+	r = (int)recvmsg(sock, &hdr, flags);
 	if (-1 == r)
 		return -1;
 
@@ -697,7 +687,7 @@ static inline int socket_sendto_addr(IN socket_t sock, IN const socket_bufvec_t*
 	char control[64];
 
 #if defined(OS_WINDOWS) && _WIN32_WINNT >= 0x0600
-	struct cmsghdr *cmsg;
+	WSACMSGHDR* cmsg;
 	struct in_pktinfo* pktinfo;
 	struct in6_pktinfo* pktinfo6;
 
@@ -711,7 +701,7 @@ static inline int socket_sendto_addr(IN socket_t sock, IN const socket_bufvec_t*
 	wsamsg.Control.len = sizeof(control);
 	wsamsg.dwFlags = 0;
 
-	cmsg = CMSG_FIRSTHDR(&wsamsg);
+	cmsg = WSA_CMSG_FIRSTHDR(&wsamsg);
 	if (AF_INET == local->sa_family && locallen >= sizeof(struct sockaddr_in))
 	{
 		cmsg->cmsg_level = IPPROTO_IP;
@@ -720,7 +710,7 @@ static inline int socket_sendto_addr(IN socket_t sock, IN const socket_bufvec_t*
 		pktinfo = (struct in_pktinfo*)WSA_CMSG_DATA(cmsg);
 		memset(pktinfo, 0, sizeof(struct in_pktinfo));
 		memcpy(&pktinfo->ipi_addr, &((struct sockaddr_in*)local)->sin_addr, sizeof(pktinfo->ipi_addr));
-		wsamsg.Control.len = CMSG_SPACE(sizeof(struct in_pktinfo));
+		wsamsg.Control.len = WSA_CMSG_SPACE(sizeof(struct in_pktinfo));
 	}
 	else if (AF_INET6 == local->sa_family && locallen >= sizeof(struct sockaddr_in6))
 	{
@@ -730,7 +720,7 @@ static inline int socket_sendto_addr(IN socket_t sock, IN const socket_bufvec_t*
 		pktinfo6 = (struct in6_pktinfo*)WSA_CMSG_DATA(cmsg);
 		memset(pktinfo6, 0, sizeof(struct in6_pktinfo));
 		memcpy(&pktinfo6->ipi6_addr, &((struct sockaddr_in6*)local)->sin6_addr, sizeof(pktinfo6->ipi6_addr));
-		wsamsg.Control.len = CMSG_SPACE(sizeof(struct in6_pktinfo));
+		wsamsg.Control.len = WSA_CMSG_SPACE(sizeof(struct in6_pktinfo));
 	}
 	else
 	{
@@ -740,13 +730,13 @@ static inline int socket_sendto_addr(IN socket_t sock, IN const socket_bufvec_t*
 
 	return 0 == WSASendMsg(sock, &wsamsg, flags, &bytes, NULL, NULL) ? bytes : SOCKET_ERROR;
 
-#elif defined(OS_LINUX)
+#elif defined(OS_LINUX) || defined(OS_MAC)
 	struct msghdr hdr;
 	struct cmsghdr *cmsg;
 
 	memset(&hdr, 0, sizeof(hdr));
 	memset(control, 0, sizeof(control));
-	hdr.msg_name = &peer;
+	hdr.msg_name = (void*)peer;
 	hdr.msg_namelen = peerlen;
 	hdr.msg_iov = (struct iovec*)vec;
 	hdr.msg_iovlen = n;
@@ -758,7 +748,7 @@ static inline int socket_sendto_addr(IN socket_t sock, IN const socket_bufvec_t*
 	if (AF_INET == local->sa_family)
 	{
 		struct in_pktinfo* pktinfo;
-		cmsg->cmsg_level = SOL_IP;// IPPROTO_IP;
+        cmsg->cmsg_level = IPPROTO_IP; // SOL_IP
 		cmsg->cmsg_type = IP_PKTINFO;
 		cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
 		pktinfo = (struct in_pktinfo*)CMSG_DATA(cmsg);
@@ -785,7 +775,7 @@ static inline int socket_sendto_addr(IN socket_t sock, IN const socket_bufvec_t*
 		return -1;
 	}
 
-	return sendmsg(sock, &hdr, flags);
+	return (int)sendmsg(sock, &hdr, flags);
 #else
 #pragma error("xxxx\n");
 	return -1;
@@ -845,7 +835,7 @@ static inline int64_t socket_poll_read(socket_t s[], int n, int timeout)
 	}
 
 	r = poll(fds, j, timeout);
-	while (-1 == r && EINTR == errno)
+	while (-1 == r && (EINTR == errno || EAGAIN == errno))
 		r = poll(fds, j, timeout);
 
 	for (r = i = 0; i < n && i < 64; i++)

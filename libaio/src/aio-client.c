@@ -4,6 +4,7 @@
 #include "aio-connect.h"
 #include "aio-recv.h"
 #include "sys/atomic.h"
+#include "sys/system.h"
 #include "sys/spinlock.h"
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +42,7 @@ struct aio_client_t
 	int32_t ref;
 	spinlock_t locker;
 	aio_socket_t socket;
+	void* wflags;
 
 	int state; // 0-unconnect, 1-connecting, 2-connected
 	char* host;
@@ -48,6 +50,7 @@ struct aio_client_t
 	int ctimeout;
 	int rtimeout;
 	int wtimeout;
+	uint64_t wclock; // last sent data clock, for check connection alive
 
 	struct aio_recv_t recv;
 	struct aio_socket_rw_t send;
@@ -80,6 +83,7 @@ aio_client_t* aio_client_create(const char* host, int port, struct aio_client_ha
 	client->port = port;
 	client->host = (char*)(client + 1);
 	memcpy(client->host, host, len + 1);
+	client->wflags = client;
 	
 	spinlock_create(&client->locker);
 	client->socket = invalid_aio_socket;
@@ -94,6 +98,9 @@ aio_client_t* aio_client_create(const char* host, int port, struct aio_client_ha
 
 int aio_client_destroy(aio_client_t* client)
 {
+	if (!client || !atomic_cas_ptr(&client->wflags, client, NULL))
+		return 0;
+
 	aio_client_disconnect(client);
 	aio_client_release(client);
 	return 0;
@@ -352,6 +359,15 @@ static void aio_client_onrecv(void* param, int code, size_t bytes)
 	struct aio_client_t* client;
 	client = (struct aio_client_t*)param;
 	
+	if (ETIMEDOUT == code
+		&& client->wclock + client->rtimeout > system_clock()
+		&& 0 == aio_recv_retry(&client->recv, client->rtimeout))
+	{
+		// if we have active send connection, recv timeout maybe normal case
+		// e.g. RTMP play session
+		return;
+	}
+
 	spinlock_lock(&client->locker);
 	client->data[RECV].state = RW_NONE; // clear recv state
 	if (0 != code || 0 == bytes) aio_client_disconnect_internal(client);
@@ -367,6 +383,7 @@ static void aio_client_onsend(void* param, int code, size_t bytes)
 	client = (struct aio_client_t*)param;
 
 	spinlock_lock(&client->locker);
+	client->wclock = system_clock();
 	client->data[SEND].state = RW_NONE; // clear send state
 	if (0 != code) aio_client_disconnect_internal(client);
 	spinlock_unlock(&client->locker);

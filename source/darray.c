@@ -64,7 +64,8 @@ int darray_erase(struct darray_t* arr, int index)
     if (index < 0 || index >= arr->count)
         return ENOENT;
 
-    memmove(ADDRESS(index), ADDRESS(index + 1), SIZE(arr->count - 1));
+    if(index + 1 < arr->count)
+        memmove(ADDRESS(index), ADDRESS(index + 1), SIZE(arr->count - index - 1));
     arr->count -= 1;
     return 0;
 }
@@ -94,6 +95,11 @@ int darray_insert(struct darray_t* arr, int before, const void* item)
     memcpy(ADDRESS(before), item, SIZE(1));
     arr->count += 1;
     return 0;
+}
+
+int darray_push_back(struct darray_t* arr, const void* item)
+{
+    return darray_insert(arr, -1, item);
 }
 
 int darray_pop_back(struct darray_t* arr)

